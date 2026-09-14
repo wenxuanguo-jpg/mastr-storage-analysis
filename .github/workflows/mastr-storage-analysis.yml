@@ -11,7 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
-      MASTR_WORK_DIR: ${{ runner.temp }}/mastr_export
       PYTHONUTF8: "1"
 
     steps:
@@ -29,6 +28,8 @@ jobs:
         run: python -m pip install -r requirements-mastr.txt
 
       - name: Run official MaStR export analysis
+        env:
+          MASTR_WORK_DIR: "${{ runner.temp }}/mastr_export"
         run: python mastr_official_export.py
 
       - name: Upload filtered data and analysis
