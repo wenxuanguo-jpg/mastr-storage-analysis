@@ -1,0 +1,50 @@
+name: MaStR storage analysis
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      MASTR_WORK_DIR: ${{ runner.temp }}/mastr_export
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-mastr.txt
+
+      - name: Install analysis dependencies
+        run: python -m pip install -r requirements-mastr.txt
+
+      - name: Run official MaStR export analysis
+        run: python mastr_official_export.py
+
+      - name: Upload filtered data and analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: mastr-storage-0.8kw-analysis
+          path: |
+            mastr_storage_0.8kw.csv
+            mastr_storage_0.8kw_monthly.csv
+            mastr_storage_0.8kw_analysis.json
+            mastr_storage_0.8kw_analysis.md
+            mastr_storage_0.8kw_monthly.png
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Show runner disk usage
+        if: always()
+        run: df -h
