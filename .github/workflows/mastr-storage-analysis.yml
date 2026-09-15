@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      MASTR_WORK_DIR: ${{ runner.temp }}/mastr_export
+      MASTR_WORK_DIR: /tmp/mastr_export
       MASTR_OUTPUT_DIR: ${{ github.workspace }}/outputs
       MASTR_SITE_DIR: ${{ github.workspace }}/site
       PYTHONUTF8: "1"
