@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MaStR Balcony Monitor</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">M</span><div><strong>MaStR Balcony Monitor</strong><span>德国阳台能源登记观察</span></div></div>
+    <div class="source-status"><span class="status-dot"></span><span id="dataStatus">正在读取数据</span></div>
+  </header>
+  <main class="shell">
+    <section class="intro">
+      <div><p class="eyebrow">OFFICIAL REGISTRY VIEW</p><h1>阳台光伏与阳台储能</h1><p class="lede">按官方 MaStR 全量导出包追踪登记节奏、区域分布与设备特征。</p></div>
+      <div class="data-meta"><span>数据包</span><strong id="exportName">加载中</strong><span id="generatedAt">生成时间加载中</span></div>
+    </section>
+    <section class="category-switch" aria-label="品类选择">
+      <button class="category-button active" data-category="pv"><span class="category-icon sun">☼</span><span><strong>阳台光伏</strong><small id="pvSwitchCount">加载中</small></span></button>
+      <button class="category-button" data-category="storage"><span class="category-icon battery">▣</span><span><strong>阳台储能</strong><small id="storageSwitchCount">加载中</small></span></button>
+    </section>
+    <section class="metric-grid">
+      <article class="metric-card accent"><span class="metric-label">筛选后登记数</span><strong id="metricCount">--</strong><span id="metricCountNote">官方记录</span></article>
+      <article class="metric-card"><span class="metric-label">登记日期范围</span><strong id="metricRange">--</strong><span>严格晚于 2023-01-01</span></article>
+      <article class="metric-card"><span class="metric-label">峰值月份</span><strong id="metricPeak">--</strong><span id="metricPeakNote">--</span></article>
+      <article class="metric-card"><span class="metric-label">当前筛选</span><strong id="metricFilter">全量</strong><span id="metricLoaded">明细按需加载</span></article>
+    </section>
+    <section class="insight-band"><div class="section-kicker">自动观察</div><div id="insightText" class="insight-text">正在生成观察结果...</div></section>
+    <section class="chart-grid">
+      <article class="panel trend-panel"><div class="panel-heading"><div><p class="panel-kicker">REGISTRATION PULSE</p><h2>月度登记趋势</h2></div><select id="trendMode" class="compact-select" aria-label="趋势视图"><option value="monthly">月度</option><option value="annual">年度</option></select></div><div class="chart-wrap"><canvas id="trendChart"></canvas></div><div id="trendCaption" class="chart-caption"></div></article>
+      <article class="panel distribution-panel"><div class="panel-heading"><div><p class="panel-kicker">REGIONAL MIX</p><h2>登记州分布</h2></div><span class="panel-note">Top 8</span></div><div id="stateBars" class="bars"></div></article>
+    </section>
+    <section class="panel feature-panel">
+      <div class="panel-heading"><div><p class="panel-kicker">DEVICE PROFILE</p><h2>设备与运行特征</h2></div><span class="panel-note">当前品类 Top 5</span></div>
+      <div id="featureGrid" class="feature-grid"></div>
+    </section>
+    <section class="panel records-panel">
+      <div class="panel-heading records-heading"><div><p class="panel-kicker">FILTERABLE REGISTER</p><h2>筛选后的原表</h2></div><div class="table-actions"><button id="downloadButton" class="button secondary" type="button">↓ 下载当前 CSV</button><button id="resetButton" class="button ghost" type="button">↺ 重置筛选</button></div></div>
+      <div class="filters">
+        <label class="search-field"><span>关键词</span><input id="searchInput" type="search" placeholder="名称、编号、城市、地区"></label>
+        <label><span>州</span><select id="stateFilter"><option value="">全部州</option></select></label>
+        <label><span>Landkreis</span><select id="districtFilter"><option value="">全部地区</option></select></label>
+        <label><span>运行状态</span><select id="statusFilter"><option value="">全部状态</option></select></label>
+        <label id="technologyFilterWrap"><span>技术 / 能源</span><select id="technologyFilter"><option value="">全部</option></select></label>
+      </div>
+      <div class="table-meta"><span id="resultCount">正在加载明细...</span><label class="page-size">每页 <select id="pageSize"><option>25</option><option>50</option><option>100</option></select></label></div>
+      <div class="table-scroll"><table><thead><tr><th data-sort="registered">登记日期 <span>↕</span></th><th data-sort="name">名称 / 编号 <span>↕</span></th><th data-sort="state">州 <span>↕</span></th><th data-sort="district">Landkreis / 城市</th><th data-sort="power">功率</th><th>技术 / 状态</th></tr></thead><tbody id="recordBody"></tbody></table><div id="emptyState" class="empty-state hidden">没有符合当前条件的记录</div></div>
+      <div class="pagination"><span id="pageLabel">第 1 页</span><div><button id="prevPage" class="icon-button" type="button" aria-label="上一页">←</button><button id="nextPage" class="icon-button" type="button" aria-label="下一页">→</button></div></div>
+    </section>
+    <section class="notes"><div><span class="section-kicker">口径说明</span><p id="scopeText">加载中</p></div><a href="https://www.marktstammdatenregister.de/MaStR/Einheit/Einheiten/ErweiterteOeffentlicheEinheitenuebersicht" target="_blank" rel="noreferrer">打开官方 MaStR 页面 ↗</a></section>
+  </main>
+  <footer class="footer">数据来源：Bundesnetzagentur / Marktstammdatenregister · 本页面不代表销量</footer>
+  <script src="app.js"></script>
+</body>
+</html>

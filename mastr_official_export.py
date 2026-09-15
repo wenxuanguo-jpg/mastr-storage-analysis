@@ -1,67 +1,171 @@
-"""Download and analyse the official MaStR Gesamtdatenexport.
+"""Process the official MaStR export for two balcony categories.
 
-The official full export is an XML ZIP. This script downloads it with resume
-support, reads only the storage XML inside the ZIP, filters the records, and
-writes a CSV incrementally so that the full export is never loaded into RAM.
+The full official export is downloaded to the ephemeral GitHub Actions runner
+and processed row by row. It is never loaded into RAM as one dataframe.
 
-Filter:
-    Registrierungsdatum > 2023-01-01
-    Nettonennleistung == 0.8 kW
+Balcony PV:
+    Registrierungsdatum der Einheit > 2023-01-01
+    Art der Solaranlage == Steckerfertige Solaranlage (sog. Balkonkraftwerk)
 
-MaStR does not provide a reliable public "balcony storage" product category in
-this export. The output therefore covers all electricity storage units matching
-the two filters, rather than a strict Balkonspeicher classification.
+Balcony storage:
+    Registrierungsdatum der Einheit > 2023-01-01
+    Nettonennleistung der Einheit == 0.8 kW
+    Energieträger == Speicher
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
+import gzip
 import html
+import io
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 import zipfile
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
-import pandas as pd
 import requests
-from lxml import etree
 
 
+ROOT_DIR = Path(__file__).resolve().parent
 DOWNLOAD_PAGE = "https://www.marktstammdatenregister.de/MaStR/Datendownload"
-# Used only if the download page is temporarily unavailable. Normally the
-# script discovers the current link from the official page.
 FALLBACK_EXPORT_URL = (
     "https://download.marktstammdatenregister.de/"
     "Gesamtdatenexport_20260914_26.1.zip"
 )
-
-OUTPUT_DIR = Path(__file__).resolve().parent
-WORK_DIR = Path(
-    os.environ.get(
-        "MASTR_WORK_DIR",
-        str(Path(os.environ.get("RUNNER_TEMP", r"D:\MaStR_Official_Export")) / "mastr_export"),
-    )
+PUBLIC_SOURCE_PAGE = (
+    "https://www.marktstammdatenregister.de/MaStR/Einheit/Einheiten/"
+    "ErweiterteOeffentlicheEinheitenuebersicht"
 )
-ZIP_PATH = WORK_DIR / "Gesamtdatenexport_latest.zip"
-OUTPUT_PATH = OUTPUT_DIR / "mastr_storage_0.8kw.csv"
-MONTHLY_PATH = OUTPUT_DIR / "mastr_storage_0.8kw_monthly.csv"
-ANALYSIS_PATH = OUTPUT_DIR / "mastr_storage_0.8kw_analysis.json"
-REPORT_PATH = OUTPUT_DIR / "mastr_storage_0.8kw_analysis.md"
-CHART_PATH = OUTPUT_DIR / "mastr_storage_0.8kw_monthly.png"
-
 DATE_CUTOFF = date(2023, 1, 1)
 TARGET_POWER_KW = 0.8
-USER_AGENT = "MaStR official export research client/1.0"
+TARGET_PV_TYPE = "Steckerfertige Solaranlage (sog. Balkonkraftwerk)"
+USER_AGENT = "MaStR balcony trend research client/1.0"
+
+F_ID = "MaStR-Nr. der Einheit"
+F_NAME = "Anzeige-Name der Einheit"
+F_STATUS = "Betriebs-Status"
+F_ENERGY = "Energieträger"
+F_POWER = "Nettonennleistung der Einheit"
+F_REGISTERED = "Registrierungsdatum der Einheit"
+F_STATE = "Bundesland"
+F_DISTRICT = "Landkreis"
+F_MUNICIPALITY = "Gemeinde"
+F_ZIP = "Postleitzahl"
+F_TOWN = "Ort"
+F_SOLAR_TYPE = "Art der Solaranlage"
+F_SOLAR_TECH = "Technologie der Stromerzeugung"
+F_MODULES = "Anzahl der Solar-Module"
+F_DIRECTION = "Hauptausrichtung der Solar-Module"
+F_INCLINATION = "Hauptneigungswinkel der Solar-Module"
+F_BUILDING_USE = "Nutzungsbereich des Gebäudes mit Solaranlage"
+F_STORAGE_TECH = "Speichertechnologie"
+F_CAPACITY = "Nutzbare Speicherkapazität in kWh"
+F_COUPLING = "AC/DC-Koppelung"
+
+ALIASES: Dict[str, Tuple[str, ...]] = {
+    "id": (F_ID, "EinheitMastrNummer"),
+    "name": (F_NAME, "NameStromerzeugungseinheit"),
+    "status": (F_STATUS, "EinheitBetriebsstatus", "EinheitSystemstatus"),
+    "energy": (F_ENERGY, "Energietraeger"),
+    "power": (F_POWER, "Nettonennleistung"),
+    "registered": (F_REGISTERED, "Registrierungsdatum"),
+    "state": (F_STATE, "Bundesland"),
+    "district": (F_DISTRICT, "Landkreis"),
+    "municipality": (F_MUNICIPALITY, "Gemeinde"),
+    "zip": (F_ZIP, "Postleitzahl"),
+    "town": (F_TOWN, "Ort"),
+    "solar_type": (F_SOLAR_TYPE, "ArtDerSolaranlage"),
+    "solar_tech": (F_SOLAR_TECH, "TechnologieDerStromerzeugung"),
+    "modules": (F_MODULES, "AnzahlDerSolarModule"),
+    "direction": (F_DIRECTION, "HauptausrichtungDerSolarModule"),
+    "inclination": (F_INCLINATION, "HauptneigungswinkelDerSolarModule"),
+    "building_use": (F_BUILDING_USE, "NutzungsbereichDesGebaeudesMitSolaranlage"),
+    "storage_tech": (F_STORAGE_TECH, "Batterietechnologie", "Speichertechnologie"),
+    "capacity": (F_CAPACITY, "NutzbareSpeicherkapazitaet"),
+    "coupling": (F_COUPLING, "AcDcKoppelung"),
+}
+
+FEATURE_FIELDS = {
+    "state": ALIASES["state"],
+    "district": ALIASES["district"],
+    "municipality": ALIASES["municipality"],
+    "status": ALIASES["status"],
+    "energy": ALIASES["energy"],
+    "solar_type": ALIASES["solar_type"],
+    "solar_tech": ALIASES["solar_tech"],
+    "storage_tech": ALIASES["storage_tech"],
+    "coupling": ALIASES["coupling"],
+    "capacity": ALIASES["capacity"],
+    "name": ALIASES["name"],
+}
+
+DEFAULT_WORK_DIR = Path(
+    os.environ.get(
+        "MASTR_WORK_DIR",
+        str(Path(os.environ.get("RUNNER_TEMP", str(ROOT_DIR / "tmp"))) / "mastr_export"),
+    )
+)
+DEFAULT_OUTPUT_DIR = Path(os.environ.get("MASTR_OUTPUT_DIR", str(ROOT_DIR / "outputs")))
+DEFAULT_SITE_DIR = Path(os.environ.get("MASTR_SITE_DIR", str(ROOT_DIR / "site")))
+
+
+def clean(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def get_value(row: Mapping[str, str], aliases: Sequence[str]) -> str:
+    for key in aliases:
+        if key in row:
+            value = clean(row[key])
+            if value:
+                return value
+    return ""
+
+
+def parse_date(raw: str) -> Optional[date]:
+    value = clean(raw)
+    if not value:
+        return None
+    for pattern in (
+        r"^(\d{4})/(\d{1,2})/(\d{1,2})",
+        r"^(\d{4})-(\d{1,2})-(\d{1,2})",
+        r"^(\d{1,2})\.(\d{1,2})\.(\d{4})",
+    ):
+        match = re.match(pattern, value)
+        if not match:
+            continue
+        try:
+            values = tuple(int(item) for item in match.groups())
+            return (
+                date(values[0], values[1], values[2])
+                if pattern.startswith(r"^(\d{4})")
+                else date(values[2], values[1], values[0])
+            )
+        except ValueError:
+            return None
+    return None
+
+
+def parse_number(raw: str) -> Optional[float]:
+    value = clean(raw).replace(" ", "").replace(",", ".")
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 def discover_export_url() -> str:
-    """Find the current official ZIP link, with a known-good fallback."""
     try:
         response = requests.get(
             DOWNLOAD_PAGE,
@@ -75,7 +179,7 @@ def discover_export_url() -> str:
             r"(?:Stichtag/)?Gesamtdatenexport_[^\"'<>\s]+?\.zip",
             page,
         )
-        candidates = []
+        candidates: List[str] = []
         for match in matches:
             if match.startswith("//"):
                 match = "https:" + match
@@ -84,126 +188,110 @@ def discover_export_url() -> str:
             candidates.append(match)
         candidates = list(dict.fromkeys(candidates))
         if candidates:
-            # Prefer the current export (without the historical Stichtag path),
-            # then choose the newest date/version shown on the official page.
-            current = [candidate for candidate in candidates if "/Stichtag/" not in candidate]
+            current = [item for item in candidates if "/Stichtag/" not in item]
             return sorted(current or candidates)[-1]
-        print("No export link found on the official page; using fallback URL.")
+        print("No export link found; using fallback URL.", flush=True)
     except requests.RequestException as exc:
-        print(f"Official download page unavailable ({exc}); using fallback URL.")
+        print(f"Download page unavailable ({exc}); using fallback URL.", flush=True)
     return FALLBACK_EXPORT_URL
 
 
 def download_resumable(url: str, destination: Path) -> int:
-    """Download a URL, resuming a partial file when the server supports Range."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     existing = destination.stat().st_size if destination.exists() else 0
     headers = {"User-Agent": USER_AGENT}
     if existing:
         headers["Range"] = f"bytes={existing}-"
-
-    with requests.get(
-        url,
-        headers=headers,
-        stream=True,
-        timeout=(60, 300),
-    ) as response:
+    with requests.get(url, headers=headers, stream=True, timeout=(60, 600)) as response:
         if existing and response.status_code == 206:
             mode = "ab"
-            content_length = int(response.headers.get("content-length", "0"))
-            total = existing + content_length if content_length else 0
+            length = int(response.headers.get("content-length", "0"))
+            total = existing + length if length else 0
         elif response.status_code == 200:
-            if existing:
-                print("Server did not resume the partial file; restarting download.")
             mode = "wb"
             existing = 0
             total = int(response.headers.get("content-length", "0"))
         else:
             response.raise_for_status()
-            raise RuntimeError(f"Unexpected HTTP status: {response.status_code}")
-
+            raise RuntimeError(f"Unexpected HTTP status {response.status_code}")
         downloaded = existing
         last_report = time.monotonic()
         with destination.open(mode) as output:
-            for chunk in response.iter_content(chunk_size=4 * 1024 * 1024):
+            for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
                 if not chunk:
                     continue
                 output.write(chunk)
                 downloaded += len(chunk)
                 now = time.monotonic()
                 if now - last_report >= 5:
-                    if total:
-                        percent = downloaded / total * 100
-                        progress = f" ({percent:.1f}%)"
-                    else:
-                        progress = ""
-                    print(
-                        f"downloaded {downloaded / 1024**3:.2f} GB"
-                        f" / {total / 1024**3:.2f} GB{progress}",
-                        flush=True,
-                    )
+                    suffix = f" ({downloaded / total:.1%})" if total else ""
+                    print(f"downloaded {downloaded / 1024**3:.2f} GB{suffix}", flush=True)
                     last_report = now
-
     size = destination.stat().st_size
     if total and size != total:
         raise RuntimeError(f"Incomplete download: {size} bytes, expected {total}")
     return size
 
 
-def local_name(tag: object) -> str:
-    return str(tag).rsplit("}", 1)[-1]
+def csv_member_names(archive: zipfile.ZipFile) -> List[str]:
+    return sorted(
+        item for item in archive.namelist()
+        if item.lower().endswith(".csv")
+        and "stromerzeug" in Path(item).name.lower()
+    )
 
 
-def child_values(element: etree._Element) -> Dict[str, str]:
-    """Return all direct leaf fields from one storage record."""
-    values: Dict[str, str] = {}
-    for child in element:
-        values[local_name(child.tag)] = (child.text or "").strip()
-    return values
+def xml_member_names(archive: zipfile.ZipFile) -> List[str]:
+    return sorted(
+        item for item in archive.namelist()
+        if item.lower().endswith(".xml")
+        and (
+            "stromerzeug" in Path(item).name.lower()
+            or "stromspeicher" in Path(item).name.lower()
+        )
+    )
 
 
-def parse_date(raw: str) -> Optional[date]:
-    raw = (raw or "").strip()
-    if not raw:
-        return None
-    iso = re.match(r"^(\d{4}-\d{2}-\d{2})", raw)
-    if iso:
-        try:
-            return date.fromisoformat(iso.group(1))
-        except ValueError:
-            return None
-    german = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", raw)
-    if german:
-        try:
-            return date(
-                int(german.group(3)), int(german.group(2)), int(german.group(1))
-            )
-        except ValueError:
-            return None
-    return None
+def source_csv_rows(handle: io.BufferedIOBase) -> Iterator[Tuple[Dict[str, str], int]]:
+    text = io.TextIOWrapper(handle, encoding="utf-8-sig", errors="replace", newline="")
+    header = text.readline()
+    if not header:
+        return
+    delimiter = ";" if header.count(";") >= header.count(",") else ","
+    reader = csv.DictReader(_prepend_line(header, text), delimiter=delimiter)
+    if not reader.fieldnames:
+        return
+    reader.fieldnames = [clean(name).lstrip("\ufeff") for name in reader.fieldnames]
+    for line_number, raw_row in enumerate(reader, 2):
+        yield (
+            {clean(key): clean(value) for key, value in raw_row.items() if key is not None},
+            line_number,
+        )
 
 
-def parse_number(raw: str) -> Optional[float]:
-    raw = (raw or "").strip().replace(",", ".")
-    if not raw:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        return None
+def _prepend_line(first: str, rest: io.TextIOBase) -> Iterator[str]:
+    yield first
+    yield from rest
 
 
-def iter_storage_records(xml_file) -> Iterator[Dict[str, str]]:
-    """Stream only ``EinheitStromSpeicher`` records from one XML member."""
-    context = etree.iterparse(xml_file, events=("end",), huge_tree=True)
+def source_xml_rows(handle: io.BufferedIOBase) -> Iterator[Tuple[Dict[str, str], int]]:
+    from lxml import etree
+
+    def local_name(tag: object) -> str:
+        return str(tag).rsplit("}", 1)[-1]
+
+    context = etree.iterparse(handle, events=("end",), huge_tree=True)
+    row_number = 0
     for _, element in context:
-        if local_name(element.tag) != "EinheitStromSpeicher":
+        if local_name(element.tag) not in {
+            "EinheitStromerzeugung",
+            "EinheitStromSpeicher",
+            "EinheitStromerzeugungseinheit",
+        }:
             continue
-        values = child_values(element)
-        yield values
-
-        # Release processed records and preceding siblings. This keeps memory
-        # bounded while parsing a very large XML member in a ZIP stream.
+        row = {local_name(child.tag): clean(child.text) for child in element}
+        row_number += 1
+        yield row, row_number
         parent = element.getparent()
         element.clear()
         if parent is not None:
@@ -212,316 +300,442 @@ def iter_storage_records(xml_file) -> Iterator[Dict[str, str]]:
     del context
 
 
-def is_match(values: Dict[str, str]) -> Tuple[bool, Optional[date], Optional[float]]:
-    registered = parse_date(values.get("Registrierungsdatum", ""))
-    power = parse_number(values.get("Nettonennleistung", ""))
-    matches = (
-        registered is not None
-        and registered > DATE_CUTOFF
-        and power is not None
-        and abs(power - TARGET_POWER_KW) <= 1e-9
-    )
-    return matches, registered, power
-
-
-def storage_xml_names(archive: zipfile.ZipFile) -> List[str]:
-    names = [
-        name
-        for name in archive.namelist()
-        if name.lower().endswith(".xml")
-        and "stromspeicher" in Path(name).name.lower()
-    ]
-    if not names:
-        raise RuntimeError(
-            "The official ZIP contains no XML member whose name includes "
-            "'StromSpeicher'. The export layout may have changed."
-        )
-    return names
-
-
-def process_zip(source_url: str) -> Tuple[int, Counter, Dict[str, Counter], Dict[str, int]]:
-    """Filter storage XML and write the result CSV incrementally."""
-    del source_url  # Kept in the signature for clear call-site provenance.
-    monthly: Counter = Counter()
-    feature_counts: Dict[str, Counter] = {
-        "Bundesland": Counter(),
-        "Energietraeger": Counter(),
-        "Batterietechnologie": Counter(),
-        "AcDcKoppelung": Counter(),
-        "Einsatzort": Counter(),
-    }
-    rows_written = 0
-
-    with zipfile.ZipFile(ZIP_PATH) as archive, OUTPUT_PATH.open(
-        "w", newline="", encoding="utf-8-sig"
-    ) as output:
-        xml_names = storage_xml_names(archive)
-        print(f"Storage XML members: {len(xml_names)}", flush=True)
-        csv_writer = None
-
-        for index, name in enumerate(xml_names, 1):
-            print(f"processing {index}/{len(xml_names)}: {name}", flush=True)
-            with archive.open(name) as xml_file:
-                for values in iter_storage_records(xml_file):
-                    if csv_writer is None:
-                        columns = list(values.keys())
-                        if "source_xml" not in columns:
-                            columns.append("source_xml")
-                        csv_writer = csv.DictWriter(
-                            output,
-                            fieldnames=columns,
-                            extrasaction="ignore",
-                        )
-                        csv_writer.writeheader()
-
-                    matches, registered, _ = is_match(values)
-                    if not matches or registered is None:
-                        continue
-
-                    row = dict(values)
-                    row["source_xml"] = name
-                    csv_writer.writerow(row)
-                    rows_written += 1
-                    monthly[registered.strftime("%Y-%m")] += 1
-                    for feature_name, counter in feature_counts.items():
-                        counter[row.get(feature_name, "") or "(empty)"] += 1
-
-        if csv_writer is None:
-            csv_writer = csv.DictWriter(output, fieldnames=["source_xml"])
-            csv_writer.writeheader()
-
-    return rows_written, monthly, feature_counts, {
-        "storage_xml_members": len(xml_names),
-    }
-
-
-def top_values(frame: pd.DataFrame, column: str, limit: int = 10) -> Dict[str, int]:
-    if column not in frame.columns:
-        return {}
-    series = frame[column].fillna("").replace("", "(empty)")
-    counts = series.value_counts().head(limit)
-    return {str(key): int(value) for key, value in counts.items()}
-
-
-def analyse_csv(
-    source_url: str,
-    count_from_stream: int,
-    monthly_from_stream: Counter,
-    feature_counts: Dict[str, Counter],
-    zip_info: Dict[str, int],
-) -> Dict[str, object]:
-    """Use pandas on the filtered CSV and create summaries."""
-    del feature_counts  # Recomputed from the final CSV for an audit check.
-    frame = pd.read_csv(OUTPUT_PATH, dtype=str, keep_default_na=False)
-    if "Registrierungsdatum" in frame.columns:
-        registration_dates = pd.to_datetime(
-            frame["Registrierungsdatum"], errors="coerce"
-        )
-        frame["month"] = registration_dates.dt.strftime("%Y-%m")
-    else:
-        registration_dates = pd.Series([], dtype="datetime64[ns]")
-        frame["month"] = ""
-
-    monthly = (
-        frame.loc[frame["month"] != ""]
-        .groupby("month", as_index=False)
-        .size()
-        .rename(columns={"size": "registrations"})
-        .sort_values("month")
-    )
-    monthly["share"] = monthly["registrations"] / max(len(frame), 1)
-    monthly["cumulative"] = monthly["registrations"].cumsum()
-    monthly.to_csv(MONTHLY_PATH, index=False, encoding="utf-8-sig")
-
-    if len(frame) != count_from_stream:
-        raise RuntimeError(
-            f"CSV count mismatch: stream={count_from_stream}, pandas={len(frame)}"
-        )
-    if int(monthly["registrations"].sum()) != len(frame):
-        raise RuntimeError("Monthly total does not equal CSV row count")
-
-    peak = None
-    if not monthly.empty:
-        peak_row = monthly.loc[monthly["registrations"].idxmax()]
-        peak = {
-            "month": str(peak_row["month"]),
-            "registrations": int(peak_row["registrations"]),
+class CategoryStats:
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.count = 0
+        self.unique_ids = 0
+        self.monthly: Counter[str] = Counter()
+        self.annual: Counter[str] = Counter()
+        self.features: Dict[str, Counter[str]] = {
+            name: Counter() for name in FEATURE_FIELDS
         }
+        self.first_date: Optional[date] = None
+        self.last_date: Optional[date] = None
 
-    analysis: Dict[str, object] = {
-        "source_url": source_url,
-        "source_zip": str(ZIP_PATH),
-        "filter": {
-            "registration_date": "> 2023-01-01",
-            "net_rated_power_kw": TARGET_POWER_KW,
-        },
-        "scope_note": (
-            "The MaStR official storage export has no reliable public field "
-            "that isolates balcony/plug-in storage. Results therefore cover "
-            "all electricity storage units matching the two filters."
-        ),
-        "matching_records": int(len(frame)),
-        "unique_unit_ids": int(frame["EinheitMastrNummer"].nunique())
-        if "EinheitMastrNummer" in frame.columns
-        else None,
-        "first_registration_date": (
-            registration_dates.min().strftime("%Y-%m-%d")
-            if registration_dates.notna().any()
-            else None
-        ),
-        "last_registration_date": (
-            registration_dates.max().strftime("%Y-%m-%d")
-            if registration_dates.notna().any()
-            else None
-        ),
-        "monthly_peak": peak,
-        "monthly_average": (
-            round(float(monthly["registrations"].mean()), 2)
-            if not monthly.empty
-            else 0
-        ),
-        "monthly": {
-            str(row.month): int(row.registrations)
-            for row in monthly.itertuples(index=False)
-        },
-        "top_features_raw_codes": {
-            column: top_values(frame, column)
-            for column in (
-                "Bundesland",
-                "Energietraeger",
-                "Batterietechnologie",
-                "AcDcKoppelung",
-                "Einsatzort",
+    def observe(self, row: Mapping[str, str], registered: date) -> None:
+        self.count += 1
+        month = registered.strftime("%Y-%m")
+        self.monthly[month] += 1
+        self.annual[str(registered.year)] += 1
+        self.first_date = registered if self.first_date is None else min(self.first_date, registered)
+        self.last_date = registered if self.last_date is None else max(self.last_date, registered)
+        for feature, aliases in FEATURE_FIELDS.items():
+            self.features[feature][get_value(row, aliases) or "(keine Angabe)"] += 1
+
+    def monthly_rows(self) -> List[Dict[str, object]]:
+        total = max(self.count, 1)
+        cumulative = 0
+        result: List[Dict[str, object]] = []
+        for month in sorted(self.monthly):
+            count = self.monthly[month]
+            cumulative += count
+            result.append({
+                "month": month,
+                "registrations": count,
+                "share": round(count / total, 6),
+                "cumulative": cumulative,
+            })
+        return result
+
+    def annual_rows(self) -> List[Dict[str, object]]:
+        return [
+            {"year": year, "registrations": self.annual[year]}
+            for year in sorted(self.annual)
+        ]
+
+
+class SeenIds:
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.connection = sqlite3.connect(path)
+        self.connection.execute("PRAGMA journal_mode=OFF")
+        self.connection.execute("PRAGMA synchronous=OFF")
+        self.connection.execute(
+            "CREATE TABLE IF NOT EXISTS seen (category TEXT NOT NULL, unit_id TEXT NOT NULL, PRIMARY KEY(category, unit_id))"
+        )
+        self.pending = 0
+
+    def add(self, category: str, unit_id: str) -> bool:
+        cursor = self.connection.execute(
+            "INSERT OR IGNORE INTO seen(category, unit_id) VALUES (?, ?)",
+            (category, unit_id),
+        )
+        self.pending += 1
+        if self.pending >= 5000:
+            self.connection.commit()
+            self.pending = 0
+        return cursor.rowcount == 1
+
+    def close(self) -> None:
+        self.connection.commit()
+        self.connection.close()
+
+
+class OutputWriters:
+    def __init__(self, output_dir: Path, site_data_dir: Path) -> None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        site_data_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = output_dir
+        self.site_data_dir = site_data_dir
+        self.csv_files: Dict[str, Tuple[io.TextIOBase, csv.DictWriter]] = {}
+        self.gzip_files: Dict[str, gzip.GzipFile] = {}
+
+    def write(self, category: str, row: Mapping[str, str], source_name: str, fields: Sequence[str]) -> None:
+        if category not in self.csv_files:
+            filename = "balcony_pv.csv" if category == "pv" else "balcony_storage.csv"
+            output = (self.output_dir / filename).open("w", newline="", encoding="utf-8-sig")
+            columns = list(fields)
+            for extra in ("Kategorie", "Quelle"):
+                if extra not in columns:
+                    columns.append(extra)
+            writer = csv.DictWriter(output, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            self.csv_files[category] = (output, writer)
+        output, writer = self.csv_files[category]
+        enriched = dict(row)
+        enriched["Kategorie"] = "阳台光伏" if category == "pv" else "阳台储能"
+        enriched["Quelle"] = source_name
+        writer.writerow(enriched)
+
+        if category not in self.gzip_files:
+            name = "records_pv.ndjson.gz" if category == "pv" else "records_storage.ndjson.gz"
+            self.gzip_files[category] = gzip.open(
+                self.site_data_dir / name, "wt", encoding="utf-8"
             )
-        },
-        "validation": {
-            "stream_count": int(count_from_stream),
-            "stream_monthly_total": int(sum(monthly_from_stream.values())),
-            "zip_storage_xml_members": zip_info["storage_xml_members"],
-            "all_power_values_are_0_8": bool(
-                frame["Nettonennleistung"]
-                .map(parse_number)
-                .map(
-                    lambda value: value is not None
-                    and abs(value - TARGET_POWER_KW) <= 1e-9
-                )
-                .all()
-            )
-            if "Nettonennleistung" in frame.columns and len(frame)
-            else True,
-        },
+        compact = compact_record(enriched, category)
+        self.gzip_files[category].write(
+            json.dumps(compact, ensure_ascii=False, separators=(",", ":")) + "\n"
+        )
+
+    def close(self) -> None:
+        for output, _writer in self.csv_files.values():
+            output.close()
+        for stream in self.gzip_files.values():
+            stream.close()
+
+
+def compact_record(row: Mapping[str, str], category: str) -> Dict[str, str]:
+    def value(name: str) -> str:
+        return get_value(row, ALIASES[name])
+
+    return {
+        "id": value("id"),
+        "name": value("name"),
+        "status": value("status"),
+        "energy": value("energy"),
+        "power": value("power"),
+        "registered": value("registered"),
+        "state": value("state"),
+        "district": value("district"),
+        "municipality": value("municipality"),
+        "zip": value("zip"),
+        "town": value("town"),
+        "solarType": value("solar_type"),
+        "solarTech": value("solar_tech"),
+        "modules": value("modules"),
+        "direction": value("direction"),
+        "inclination": value("inclination"),
+        "buildingUse": value("building_use"),
+        "storageTech": value("storage_tech"),
+        "capacity": value("capacity"),
+        "coupling": value("coupling"),
+        "category": "pv" if category == "pv" else "storage",
     }
 
-    ANALYSIS_PATH.write_text(
-        json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8"
+
+def matches(category: str, row: Mapping[str, str]) -> Tuple[bool, Optional[date]]:
+    registered = parse_date(get_value(row, ALIASES["registered"]))
+    if registered is None or registered <= DATE_CUTOFF:
+        return False, registered
+    if category == "pv":
+        return get_value(row, ALIASES["solar_type"]) == TARGET_PV_TYPE, registered
+    power = parse_number(get_value(row, ALIASES["power"]))
+    return (
+        power is not None
+        and abs(power - TARGET_POWER_KW) <= 1e-9
+        and get_value(row, ALIASES["energy"]) == "Speicher",
+        registered,
     )
-    write_markdown_report(analysis)
-    make_chart(monthly)
-    return analysis
 
 
-def write_markdown_report(analysis: Dict[str, object]) -> None:
-    peak = analysis.get("monthly_peak") or {}
-    lines = [
-        "# MaStR 0.8 kW 储能登记初步分析",
-        "",
-        f"- 匹配记录数：**{analysis['matching_records']:,}**",
-        f"- 登记日期范围：{analysis.get('first_registration_date')} 至 {analysis.get('last_registration_date')}",
-        f"- 月均记录数：{analysis.get('monthly_average')}",
-        f"- 峰值月份：**{peak.get('month', '无')}**，{peak.get('registrations', 0):,} 条",
-        "",
-        "## 口径",
-        "",
-        "官方 Gesamtdatenexport 当前提供 XML ZIP。脚本仅读取其中的储能 XML，筛选登记日期大于 2023-01-01 且净额定功率等于 0.8 kW 的记录。",
-        "",
-        "MaStR 全量储能导出没有可靠的公开字段专门标识阳台储能/插入式储能，因此这份结果是满足两个条件的全部电力储能登记记录，不能直接等同于阳台储能销量或阳台储能登记数。",
-        "",
-        "## 结果文件",
-        "",
-        f"- 明细：`{OUTPUT_PATH.name}`",
-        f"- 月度汇总：`{MONTHLY_PATH.name}`",
-        f"- JSON 分析：`{ANALYSIS_PATH.name}`",
-        f"- 月度趋势图：`{CHART_PATH.name}`（若 matplotlib 可用）",
-        "",
-        "## 月度注册趋势",
-        "",
-        "| 月份 | 登记数 | 占比 | 累计 |",
-        "|---|---:|---:|---:|",
-    ]
-    monthly = analysis.get("monthly", {})
-    total = max(int(analysis.get("matching_records", 0)), 1)
-    cumulative = 0
-    for month, value in monthly.items():
-        value_int = int(value)
-        cumulative += value_int
-        lines.append(
-            f"| {month} | {value_int:,} | {value_int / total:.2%} | {cumulative:,} |"
-        )
-    REPORT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def make_chart(monthly: pd.DataFrame) -> None:
-    if monthly.empty:
+def iter_members(source_path: Path) -> Iterator[Tuple[str, Iterable[Tuple[Dict[str, str], int]]]]:
+    if source_path.suffix.lower() == ".csv":
+        yield source_path.name, source_csv_rows(source_path.open("rb"))
         return
-    try:
-        import matplotlib
+    if source_path.suffix.lower() != ".zip":
+        raise RuntimeError(f"Unsupported source file: {source_path}")
+    archive = zipfile.ZipFile(source_path)
+    names = csv_member_names(archive)
+    if names:
+        for name in names:
+            yield name, source_csv_rows(archive.open(name))
+        archive.close()
+        return
+    names = xml_member_names(archive)
+    if not names:
+        archive.close()
+        raise RuntimeError("The official ZIP contains no Stromerzeuger CSV or XML member.")
+    for name in names:
+        yield name, source_xml_rows(archive.open(name))
+    archive.close()
 
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
 
-        figure, axis = plt.subplots(figsize=(13, 5.5))
-        axis.plot(
-            monthly["month"],
-            monthly["registrations"],
-            marker="o",
-            linewidth=1.5,
+def top_features(stats: CategoryStats, limit: int = 12) -> Dict[str, List[Dict[str, object]]]:
+    return {
+        feature: [
+            {"value": value, "count": count}
+            for value, count in counter.most_common(limit)
+        ]
+        for feature, counter in stats.features.items()
+    }
+
+
+def insight_lines(stats: CategoryStats) -> List[str]:
+    if not stats.count:
+        return [f"{stats.label}没有匹配记录，需检查官方导出包字段或筛选口径。"]
+    lines = [f"按当前 MaStR 筛选口径，共有 **{stats.count:,}** 条登记记录。"]
+    if stats.first_date and stats.last_date:
+        lines.append(
+            f"登记日期覆盖 **{stats.first_date.isoformat()} 至 {stats.last_date.isoformat()}**。"
         )
-        axis.set_title("MaStR storage registrations: Nettonennleistung = 0.8 kW")
-        axis.set_xlabel("Registration month")
-        axis.set_ylabel("Registrations")
-        axis.tick_params(axis="x", rotation=60)
-        axis.grid(True, alpha=0.3)
-        figure.tight_layout()
-        figure.savefig(CHART_PATH, dpi=160)
-        plt.close(figure)
-    except ImportError:
-        print("matplotlib is not installed; skipped PNG chart.")
+    peak_month, peak_count = max(stats.monthly.items(), key=lambda item: item[1])
+    lines.append(f"月度峰值为 **{peak_month}**，共 {peak_count:,} 条。")
+    state = stats.features["state"].most_common(1)
+    if state and state[0][0] != "(keine Angabe)":
+        lines.append(
+            f"登记最多的州是 **{state[0][0]}**，占 {state[0][1] / stats.count:.1%}。"
+        )
+    recent_months = sorted(stats.monthly)[-3:]
+    if recent_months:
+        lines.append(
+            f"最近 {len(recent_months)} 个数据月合计 "
+            f"{sum(stats.monthly[item] for item in recent_months):,} 条。"
+        )
+    return lines
+
+
+def write_analysis(
+    source_url: str,
+    export_name: str,
+    generated_at: str,
+    stats: Mapping[str, CategoryStats],
+    output_dir: Path,
+    site_data_dir: Path,
+    scanned: int,
+    source_members: int,
+) -> Dict[str, object]:
+    categories: Dict[str, object] = {}
+    monthly: Dict[str, object] = {}
+    features: Dict[str, object] = {}
+    insights: Dict[str, object] = {}
+    for key, item in stats.items():
+        categories[key] = {
+            "label": item.label,
+            "matching_records": item.count,
+            "unique_unit_ids": item.unique_ids,
+            "first_registration_date": item.first_date.isoformat() if item.first_date else None,
+            "last_registration_date": item.last_date.isoformat() if item.last_date else None,
+            "annual": item.annual_rows(),
+        }
+        monthly[key] = item.monthly_rows()
+        features[key] = top_features(item)
+        insights[key] = insight_lines(item)
+    summary: Dict[str, object] = {
+        "generated_at_utc": generated_at,
+        "source_page": PUBLIC_SOURCE_PAGE,
+        "source_download_page": DOWNLOAD_PAGE,
+        "source_export": export_name,
+        "source_url": source_url,
+        "filters": {
+            "registration_date": "> 2023-01-01",
+            "balcony_pv_solar_type": TARGET_PV_TYPE,
+            "balcony_storage_power_kw": TARGET_POWER_KW,
+            "balcony_storage_energy_carrier": "Speicher",
+        },
+        "categories": categories,
+        "monthly": monthly,
+        "features": features,
+        "insights": insights,
+        "validation": {
+            "source_members": source_members,
+            "source_rows_scanned": scanned,
+            "monthly_totals_equal_counts": all(
+                sum(item.monthly.values()) == item.count for item in stats.values()
+            ),
+            "unique_ids_equal_counts": all(
+                item.unique_ids == item.count for item in stats.values()
+            ),
+        },
+        "notes": [
+            "统计口径是官方 MaStR 全量导出包中登记日期严格大于 2023-01-01 的记录。",
+            "储能的 0.8 kW 匹配同时兼容官方 CSV 中的 0,8 和 0.8 写法。",
+            "MaStR 没有公开字段能证明每一条 0.8 kW Speicher 都是物理上的插入式产品；阳台储能标签沿用用户给定筛选口径。",
+            "扩展单位总览包含截至数据日已新登记或变更的公开记录，统计不是销量。",
+        ],
+    }
+    site_data_dir.mkdir(parents=True, exist_ok=True)
+    for filename, payload in (
+        ("summary.json", summary),
+        ("monthly.json", monthly),
+        ("features.json", features),
+    ):
+        (site_data_dir / filename).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    for filename, payload in (
+        ("mastr_dashboard_summary.json", summary),
+        ("mastr_dashboard_monthly.json", monthly),
+        ("mastr_dashboard_features.json", features),
+    ):
+        (output_dir / filename).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    report = [
+        "# MaStR 阳台光伏与阳台储能分析",
+        "",
+        f"数据包：{export_name}",
+        f"生成时间（UTC）：{generated_at}",
+        "",
+        "| 品类 | 登记数 | 日期范围 |",
+        "|---|---:|---|",
+    ]
+    for key, label in (("pv", "阳台光伏"), ("storage", "阳台储能")):
+        item = categories[key]
+        report.append(
+            f"| {label} | {item['matching_records']:,} | "
+            f"{item['first_registration_date']} 至 {item['last_registration_date']} |"
+        )
+    report += ["", "## 自动分析", ""]
+    for key, label in (("pv", "阳台光伏"), ("storage", "阳台储能")):
+        report += [f"### {label}", ""]
+        report += [f"- {line}" for line in insights[key]]
+        report.append("")
+    report += [
+        "## 口径与限制",
+        "",
+        *[f"- {note}" for note in summary["notes"]],
+        "",
+        "完整筛选明细位于同一次 GitHub Actions 的 artifact；在线看板加载压缩后的交互字段。",
+    ]
+    (output_dir / "mastr_dashboard_analysis.md").write_text(
+        "\n".join(report) + "\n", encoding="utf-8"
+    )
+    return summary
+
+
+def process(source_path: Path, source_url: str, output_dir: Path, site_dir: Path) -> Dict[str, object]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    site_data_dir = site_dir / "data"
+    site_data_dir.mkdir(parents=True, exist_ok=True)
+    for path in site_data_dir.iterdir():
+        if path.is_file():
+            path.unlink()
+    for filename in ("balcony_pv.csv", "balcony_storage.csv"):
+        path = output_dir / filename
+        if path.exists():
+            path.unlink()
+
+    stats = {"pv": CategoryStats("阳台光伏"), "storage": CategoryStats("阳台储能")}
+    # A run must start with an empty de-duplication index. The index is only a
+    # run-time guard against duplicate rows inside one export, not a history DB.
+    seen_path = output_dir.parent / "mastr_seen.sqlite"
+    if seen_path.exists():
+        seen_path.unlink()
+    seen = SeenIds(seen_path)
+    writers = OutputWriters(output_dir, site_data_dir)
+    fields: List[str] = []
+    scanned = 0
+    source_members = 0
+    try:
+        for source_name, rows in iter_members(source_path):
+            source_members += 1
+            print(f"processing {source_members}: {source_name}", flush=True)
+            for row, _line_number in rows:
+                scanned += 1
+                if scanned % 250000 == 0:
+                    print(f"scanned {scanned:,} source rows", flush=True)
+                if not fields:
+                    fields = list(row.keys())
+                for category in ("pv", "storage"):
+                    matched, registered = matches(category, row)
+                    if not matched or registered is None:
+                        continue
+                    unit_id = get_value(row, ALIASES["id"]) or f"{source_name}:{scanned}"
+                    if not seen.add(category, unit_id):
+                        continue
+                    stats[category].unique_ids += 1
+                    stats[category].observe(row, registered)
+                    writers.write(category, row, source_name, fields)
+        if not fields:
+            raise RuntimeError("No rows found in the official source.")
+    finally:
+        writers.close()
+        seen.close()
+
+    # Keep the artifact and the dashboard valid even if one category has zero
+    # matches in a future export.
+    for category, filename in (("pv", "balcony_pv.csv"), ("storage", "balcony_storage.csv")):
+        csv_path = output_dir / filename
+        if not csv_path.exists():
+            columns = list(fields) + ["Kategorie", "Quelle"]
+            with csv_path.open("w", newline="", encoding="utf-8-sig") as output:
+                csv.DictWriter(output, fieldnames=columns).writeheader()
+        gzip_name = "records_pv.ndjson.gz" if category == "pv" else "records_storage.ndjson.gz"
+        gzip_path = site_data_dir / gzip_name
+        if not gzip_path.exists():
+            with gzip.open(gzip_path, "wt", encoding="utf-8"):
+                pass
+
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    summary = write_analysis(
+        source_url,
+        source_path.name,
+        generated_at,
+        stats,
+        output_dir,
+        site_data_dir,
+        scanned,
+        source_members,
+    )
+    print(f"Scanned source rows: {scanned:,}", flush=True)
+    print(f"Balcony PV records: {stats['pv'].count:,}", flush=True)
+    print(f"Balcony storage records: {stats['storage'].count:,}", flush=True)
+    return summary
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-path", type=Path)
+    parser.add_argument("--export-url", default="")
+    parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK_DIR)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--site-dir", type=Path, default=DEFAULT_SITE_DIR)
+    return parser.parse_args()
 
 
 def main() -> int:
-    print("Discovering the current official MaStR export link...", flush=True)
-    source_url = discover_export_url()
-    print(f"Official export: {source_url}", flush=True)
-    print(f"Downloading to: {ZIP_PATH}", flush=True)
-    size = download_resumable(source_url, ZIP_PATH)
-    print(f"Downloaded {size / 1024**3:.2f} GB", flush=True)
-
-    try:
-        with zipfile.ZipFile(ZIP_PATH) as archive:
-            names = storage_xml_names(archive)
-            print("ZIP opened successfully.", flush=True)
-            print("Storage XML:", ", ".join(names), flush=True)
-    except zipfile.BadZipFile as exc:
-        raise RuntimeError(
-            "Downloaded file is not a complete ZIP. Re-run the script to resume "
-            "or restart the download."
-        ) from exc
-
-    count, monthly, features, zip_info = process_zip(source_url)
-    analysis = analyse_csv(source_url, count, monthly, features, zip_info)
-    print(f"Matched records: {count:,}", flush=True)
-    print(f"Saved: {OUTPUT_PATH}", flush=True)
-    print(f"Saved: {MONTHLY_PATH}", flush=True)
-    print(f"Saved: {ANALYSIS_PATH}", flush=True)
-    print(f"Saved: {REPORT_PATH}", flush=True)
-    if CHART_PATH.exists():
-        print(f"Saved: {CHART_PATH}", flush=True)
-    if analysis.get("monthly_peak"):
-        peak = analysis["monthly_peak"]
-        print(
-            f"Peak month: {peak['month']} ({peak['registrations']:,} registrations)",
-            flush=True,
-        )
+    args = parse_args()
+    if args.source_path:
+        source_path = args.source_path.resolve()
+        source_url = "local test/source path"
+    else:
+        source_url = args.export_url or discover_export_url()
+        source_path = args.work_dir / "Gesamtdatenexport_latest.zip"
+        print(f"Official export: {source_url}", flush=True)
+        print(f"Downloading to runner temporary directory: {source_path}", flush=True)
+        size = download_resumable(source_url, source_path)
+        print(f"Downloaded {size / 1024**3:.2f} GB", flush=True)
+    if source_path.suffix.lower() == ".zip":
+        try:
+            with zipfile.ZipFile(source_path) as archive:
+                names = csv_member_names(archive) or xml_member_names(archive)
+                if not names:
+                    raise RuntimeError("No Stromerzeuger members found in the ZIP.")
+                print(f"Source members: {len(names)}", flush=True)
+        except zipfile.BadZipFile as exc:
+            raise RuntimeError("Source is not a complete ZIP; rerun to resume.") from exc
+    process(source_path, source_url, args.output_dir.resolve(), args.site_dir.resolve())
     return 0
 
 
@@ -529,5 +743,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
-        print("Interrupted. Re-run to resume the ZIP download.", file=sys.stderr)
+        print("Interrupted. Re-run to resume the source download.", file=sys.stderr)
         raise SystemExit(130)

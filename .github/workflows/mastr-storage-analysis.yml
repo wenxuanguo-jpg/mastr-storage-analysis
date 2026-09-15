@@ -1,16 +1,27 @@
-name: MaStR storage analysis
+name: MaStR balcony dashboard
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "30 2 * * 1"
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: mastr-pages
+  cancel-in-progress: false
 
 jobs:
-  analyse:
+  analyse-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
     env:
+      MASTR_WORK_DIR: ${{ runner.temp }}/mastr_export
+      MASTR_OUTPUT_DIR: ${{ github.workspace }}/outputs
+      MASTR_SITE_DIR: ${{ github.workspace }}/site
       PYTHONUTF8: "1"
 
     steps:
@@ -27,24 +38,50 @@ jobs:
       - name: Install analysis dependencies
         run: python -m pip install -r requirements-mastr.txt
 
-      - name: Run official MaStR export analysis
-        env:
-          MASTR_WORK_DIR: "${{ runner.temp }}/mastr_export"
+      - name: Build filtered datasets and dashboard data
         run: python mastr_official_export.py
 
-      - name: Upload filtered data and analysis
+      - name: Validate generated summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary = json.loads(Path("outputs/mastr_dashboard_summary.json").read_text(encoding="utf-8"))
+          for key in ("pv", "storage"):
+              item = summary["categories"][key]
+              print(f"{key}: {item['matching_records']:,} records")
+              assert item["matching_records"] == item["unique_unit_ids"]
+          assert summary["validation"]["monthly_totals_equal_counts"]
+          assert summary["validation"]["unique_ids_equal_counts"]
+          PY
+
+      - name: Upload full filtered data and analysis
         uses: actions/upload-artifact@v4
         with:
-          name: mastr-storage-0.8kw-analysis
+          name: mastr-balcony-dashboard-analysis
           path: |
-            mastr_storage_0.8kw.csv
-            mastr_storage_0.8kw_monthly.csv
-            mastr_storage_0.8kw_analysis.json
-            mastr_storage_0.8kw_analysis.md
-            mastr_storage_0.8kw_monthly.png
+            outputs/balcony_pv.csv
+            outputs/balcony_storage.csv
+            outputs/mastr_dashboard_summary.json
+            outputs/mastr_dashboard_monthly.json
+            outputs/mastr_dashboard_features.json
+            outputs/mastr_dashboard_analysis.md
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
           compression-level: 0
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy dashboard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
       - name: Show runner disk usage
         if: always()

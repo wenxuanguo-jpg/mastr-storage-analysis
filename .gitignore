@@ -1,0 +1,10 @@
+.env
+data/state.json
+data/social_posts.json
+__pycache__/
+*.pyc
+outputs/
+site/data/
+mastr_seen.sqlite
+test_outputs/
+test_site/
