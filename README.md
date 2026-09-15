@@ -2,7 +2,7 @@
 
 项目包含一个 GitHub Actions 流程，用于从 Bundesnetzagentur 的官方 MaStR Gesamtdatenexport 下载全量数据，在 GitHub Actions runner 临时目录中流式筛选，并部署交互式 GitHub Pages 看板。
 
-筛选口径：阳台光伏为 `Registrierungsdatum der Einheit > 2023-01-01` 且 `Art der Solaranlage = Steckerfertige Solaranlage (sog. Balkonkraftwerk)`；阳台储能为同一日期条件、`Nettonennleistung der Einheit = 0.8 kW` 且 `Energieträger = Speicher`。官方 CSV 的 `0,8` 会按数值 `0.8` 解析。
+筛选口径：阳台光伏为 `Registrierungsdatum der Einheit > 2023-01-01` 且 `Art der Solaranlage = Steckerfertige Solaranlage (sog. Balkonkraftwerk)`；阳台储能为同一日期条件、`Nettonennleistung der Einheit = 0.8 kW` 且 `Energieträger = Speicher`。官方 CSV 的 `0,8` 会按数值 `0.8` 解析。当前 XML 全量包使用 `EinheitenSolar` 和 `EinheitenStromSpeicher` 节点，目录型字段通过官方 `Katalogwerte` 映射为公开页面文本后再筛选。
 
 手动运行：在 GitHub 仓库的 **Actions → MaStR balcony dashboard → Run workflow** 启动。成功后，Pages 看板和同一次运行的 artifact 分别提供压缩交互明细、完整筛选 CSV、月度/年度汇总、特征统计和中文分析报告。完整 ZIP 只写入 runner 临时目录，不提交到仓库。
 

@@ -39,7 +39,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 DOWNLOAD_PAGE = "https://www.marktstammdatenregister.de/MaStR/Datendownload"
 FALLBACK_EXPORT_URL = (
     "https://download.marktstammdatenregister.de/"
-    "Gesamtdatenexport_20260914_26.1.zip"
+    "Gesamtdatenexport_20260915_26.1.zip"
 )
 PUBLIC_SOURCE_PAGE = (
     "https://www.marktstammdatenregister.de/MaStR/Einheit/Einheiten/"
@@ -241,13 +241,22 @@ def csv_member_names(archive: zipfile.ZipFile) -> List[str]:
     )
 
 
+def catalog_member_names(archive: zipfile.ZipFile) -> List[str]:
+    return sorted(
+        item
+        for item in archive.namelist()
+        if item.lower().endswith(".xml")
+        and "katalogwerte" in Path(item).name.lower()
+    )
+
+
 def xml_member_names(archive: zipfile.ZipFile) -> List[str]:
     return sorted(
         item for item in archive.namelist()
         if item.lower().endswith(".xml")
         and (
-            "stromerzeug" in Path(item).name.lower()
-            or "stromspeicher" in Path(item).name.lower()
+            "einheitensolar" in Path(item).name.lower()
+            or "einheitenstromspeicher" in Path(item).name.lower()
         )
     )
 
@@ -274,20 +283,25 @@ def _prepend_line(first: str, rest: io.TextIOBase) -> Iterator[str]:
     yield from rest
 
 
-def source_xml_rows(handle: io.BufferedIOBase) -> Iterator[Tuple[Dict[str, str], int]]:
+def source_xml_rows(
+    handle: io.BufferedIOBase,
+    row_names: Optional[Sequence[str]] = None,
+) -> Iterator[Tuple[Dict[str, str], int]]:
     from lxml import etree
 
     def local_name(tag: object) -> str:
         return str(tag).rsplit("}", 1)[-1]
 
+    wanted = set(row_names or {
+        "EinheitSolar",
+        "EinheitStromSpeicher",
+        "EinheitStromerzeugung",
+        "EinheitStromerzeugungseinheit",
+    })
     context = etree.iterparse(handle, events=("end",), huge_tree=True)
     row_number = 0
     for _, element in context:
-        if local_name(element.tag) not in {
-            "EinheitStromerzeugung",
-            "EinheitStromSpeicher",
-            "EinheitStromerzeugungseinheit",
-        }:
+        if local_name(element.tag) not in wanted:
             continue
         row = {local_name(child.tag): clean(child.text) for child in element}
         row_number += 1
@@ -298,6 +312,43 @@ def source_xml_rows(handle: io.BufferedIOBase) -> Iterator[Tuple[Dict[str, str],
             while element.getprevious() is not None:
                 del parent[0]
     del context
+
+
+def xml_catalog_value(raw: str, catalog: Mapping[str, str]) -> str:
+    value = clean(raw)
+    return catalog.get(value, value)
+
+
+def normalize_xml_row(row: Mapping[str, str], catalog: Mapping[str, str]) -> Dict[str, str]:
+    """Add the public-table field names and resolve official catalog IDs."""
+    normalized = dict(row)
+
+    def copy_field(public_name: str, xml_name: str, resolve: bool = False) -> None:
+        raw = clean(row.get(xml_name, ""))
+        if raw:
+            normalized[public_name] = xml_catalog_value(raw, catalog) if resolve else raw
+
+    copy_field(F_ID, "EinheitMastrNummer")
+    copy_field(F_NAME, "NameStromerzeugungseinheit")
+    copy_field(F_STATUS, "EinheitBetriebsstatus", resolve=True)
+    copy_field(F_ENERGY, "Energietraeger", resolve=True)
+    copy_field(F_POWER, "Nettonennleistung")
+    copy_field(F_REGISTERED, "Registrierungsdatum")
+    copy_field(F_STATE, "Bundesland", resolve=True)
+    copy_field(F_DISTRICT, "Landkreis")
+    copy_field(F_MUNICIPALITY, "Gemeinde")
+    copy_field(F_ZIP, "Postleitzahl")
+    copy_field(F_TOWN, "Ort")
+    copy_field(F_SOLAR_TYPE, "ArtDerSolaranlage", resolve=True)
+    copy_field(F_SOLAR_TECH, "Technologie", resolve=True)
+    copy_field(F_MODULES, "AnzahlModule")
+    copy_field(F_DIRECTION, "Hauptausrichtung", resolve=True)
+    copy_field(F_INCLINATION, "HauptausrichtungNeigungswinkel", resolve=True)
+    copy_field(F_BUILDING_USE, "Nutzungsbereich", resolve=True)
+    copy_field(F_STORAGE_TECH, "Batterietechnologie", resolve=True)
+    copy_field(F_CAPACITY, "NutzbareSpeicherkapazitaet")
+    copy_field(F_COUPLING, "AcDcKoppelung", resolve=True)
+    return normalized
 
 
 class CategoryStats:
@@ -472,12 +523,27 @@ def iter_members(source_path: Path) -> Iterator[Tuple[str, Iterable[Tuple[Dict[s
             yield name, source_csv_rows(archive.open(name))
         archive.close()
         return
+
+    catalog: Dict[str, str] = {}
+    for name in catalog_member_names(archive):
+        with archive.open(name) as handle:
+            for row, _line_number in source_xml_rows(handle, row_names=("Katalogwert",)):
+                item_id = clean(row.get("Id", ""))
+                item_value = clean(row.get("Wert", ""))
+                if item_id and item_value:
+                    catalog[item_id] = item_value
+
     names = xml_member_names(archive)
     if not names:
         archive.close()
-        raise RuntimeError("The official ZIP contains no Stromerzeuger CSV or XML member.")
+        raise RuntimeError("The official ZIP contains no EinheitenSolar or EinheitenStromSpeicher XML member.")
     for name in names:
-        yield name, source_xml_rows(archive.open(name))
+        def normalized_rows(member_name: str = name) -> Iterator[Tuple[Dict[str, str], int]]:
+            with archive.open(member_name) as handle:
+                for row, line_number in source_xml_rows(handle):
+                    yield normalize_xml_row(row, catalog), line_number
+
+        yield name, normalized_rows()
     archive.close()
 
 
