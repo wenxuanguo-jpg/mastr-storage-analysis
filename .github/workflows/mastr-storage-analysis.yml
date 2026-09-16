@@ -24,7 +24,7 @@ jobs:
       MASTR_WORK_DIR: /tmp/mastr_export
       MASTR_OUTPUT_DIR: ${{ github.workspace }}/outputs
       MASTR_SITE_DIR: ${{ github.workspace }}/site
-      MASTR_ENABLE_PAGES: "false"
+      MASTR_ENABLE_PAGES: "true"
       PYTHONUTF8: "1"
 
     steps:
