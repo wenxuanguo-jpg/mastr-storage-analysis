@@ -28,7 +28,7 @@
     </section>
     <section class="insight-band"><div class="section-kicker">自动观察</div><div id="insightText" class="insight-text">正在生成观察结果...</div></section>
     <section class="chart-grid">
-      <article class="panel trend-panel"><div class="panel-heading"><div><p class="panel-kicker">REGISTRATION PULSE</p><h2>月度登记趋势</h2></div><select id="trendMode" class="compact-select" aria-label="趋势视图"><option value="monthly">月度</option><option value="annual">年度</option></select></div><div class="chart-wrap"><canvas id="trendChart"></canvas></div><div id="trendCaption" class="chart-caption"></div></article>
+      <article class="panel trend-panel"><div class="panel-heading"><div><p class="panel-kicker">REGISTRATION PULSE</p><h2>月度登记趋势</h2></div><select id="trendMode" class="compact-select" aria-label="趋势视图"><option value="monthly">月度</option><option value="annual">年度</option></select></div><div class="chart-wrap"><canvas id="trendChart" tabindex="0" aria-label="月度登记趋势图：移动鼠标到数据点查看登记数"></canvas><div id="trendTooltip" class="trend-tooltip" role="status" aria-live="polite"></div></div><div id="trendCaption" class="chart-caption"></div></article>
       <article class="panel distribution-panel"><div class="panel-heading"><div><p class="panel-kicker">REGIONAL MIX</p><h2>登记州分布</h2></div><span class="panel-note">Top 8</span></div><div id="stateBars" class="bars"></div></article>
     </section>
     <section class="panel feature-panel">
@@ -51,6 +51,6 @@
     <section class="notes"><div><span class="section-kicker">口径说明</span><p id="scopeText">加载中</p></div><a href="https://www.marktstammdatenregister.de/MaStR/Einheit/Einheiten/ErweiterteOeffentlicheEinheitenuebersicht" target="_blank" rel="noreferrer">打开官方 MaStR 页面 ↗</a></section>
   </main>
   <footer class="footer">数据来源：Bundesnetzagentur / Marktstammdatenregister · 本页面不代表销量</footer>
-  <script src="app.js?v=20260917-worker"></script>
+  <script src="app.js?v=20260917-interactive-charts"></script>
 </body>
 </html>

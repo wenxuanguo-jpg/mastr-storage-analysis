@@ -13,12 +13,16 @@ const state = {
   sortDirection: "desc",
   pageRows: [],
   totalPages: 1,
-  resultCount: 0
+  resultCount: 0,
+  trendPoints: [],
+  trendHoverIndex: null,
+  trendGeometry: null
 };
 
 const $ = (selector) => document.querySelector(selector);
 const nf = new Intl.NumberFormat("zh-CN");
 const count = (value) => nf.format(Number(value || 0));
+const statePalette = ["#16816b", "#e4a22d", "#297fb5", "#c65b68", "#896dc0", "#629b61", "#d1783a", "#4a9398"];
 const esc = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[c]
 );
@@ -78,13 +82,18 @@ function setFilterControls(enabled) {
 function drawStateBars(entries) {
   const top = entries.slice(0, 8);
   const max = top[0] ? top[0].count : 1;
-  $("#stateBars").innerHTML = top.length ? top.map((item) =>
-    '<div class="bar-row"><span title="' + esc(item.value) + '">' + esc(item.value) + '</span><span class="bar-track"><i class="bar-fill" style="width:' +
-    (item.count / max * 100) + '%"></i></span><span class="bar-value">' + count(item.count) + "</span></div>"
-  ).join("") : '<div class="empty-state">暂无区域数据</div>';
+  $("#stateBars").innerHTML = top.length ? top.map((item, index) => {
+    const description = item.value + " · " + count(item.count) + " 条登记";
+    return '<div class="bar-row" tabindex="0" role="listitem" aria-label="' + esc(description) + '" style="--bar-color:' + statePalette[index % statePalette.length] + '">' +
+      '<span title="' + esc(item.value) + '">' + esc(item.value) + '</span><span class="bar-track"><i class="bar-fill" style="width:' +
+      (item.count / max * 100) + '%"></i></span><span class="bar-value">' + count(item.count) + "</span>" +
+      '<span class="bar-tooltip" role="tooltip"><strong>' + esc(item.value) + "</strong><span>" + count(item.count) + " 条登记</span></span></div>";
+  }).join("") : '<div class="empty-state">暂无区域数据</div>';
 }
 
 function drawTrend(points) {
+  state.trendPoints = points;
+  if (state.trendHoverIndex != null && state.trendHoverIndex >= points.length) state.trendHoverIndex = null;
   const canvas = $("#trendChart");
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
@@ -98,6 +107,7 @@ function drawTrend(points) {
   if (!points.length) return;
   const pad = { top: 18, right: 12, bottom: 34, left: 42 };
   const max = Math.max(...points.map((point) => point.registrations), 1);
+  state.trendGeometry = { width, height, pad, max };
   ctx.strokeStyle = "#e6eeeb";
   ctx.fillStyle = "#72817e";
   ctx.font = "10px system-ui";
@@ -115,11 +125,59 @@ function drawTrend(points) {
   points.forEach((point, index) => index ? ctx.lineTo(x(index), y(point.registrations)) : ctx.moveTo(x(index), y(point.registrations)));
   ctx.stroke();
   ctx.fillStyle = "#1f7a62";
-  points.forEach((point, index) => { ctx.beginPath(); ctx.arc(x(index), y(point.registrations), 3, 0, Math.PI * 2); ctx.fill(); });
+  points.forEach((point, index) => {
+    ctx.beginPath();
+    ctx.arc(x(index), y(point.registrations), index === state.trendHoverIndex ? 5 : 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  if (state.trendHoverIndex != null) {
+    const point = points[state.trendHoverIndex];
+    ctx.beginPath();
+    ctx.arc(x(state.trendHoverIndex), y(point.registrations), 7, 0, Math.PI * 2);
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
   ctx.fillStyle = "#72817e";
   ctx.textAlign = "center";
   const step = Math.max(1, Math.ceil(points.length / 7));
   points.forEach((point, index) => { if (index % step === 0 || index === points.length - 1) ctx.fillText(point.month, x(index), height - 10); });
+}
+
+function clearTrendHover() {
+  const wasVisible = state.trendHoverIndex != null;
+  state.trendHoverIndex = null;
+  $("#trendTooltip").classList.remove("visible");
+  if (wasVisible && state.trendPoints.length) drawTrend(state.trendPoints);
+}
+
+function updateTrendTooltip(event) {
+  const canvas = $("#trendChart");
+  const geometry = state.trendGeometry;
+  if (!geometry || !state.trendPoints.length) return;
+  const rect = canvas.getBoundingClientRect();
+  const localX = event.clientX - rect.left;
+  const plotWidth = geometry.width - geometry.pad.left - geometry.pad.right;
+  if (localX < geometry.pad.left - 12 || localX > geometry.width - geometry.pad.right + 12) {
+    clearTrendHover();
+    return;
+  }
+  const index = Math.max(0, Math.min(state.trendPoints.length - 1,
+    Math.round((localX - geometry.pad.left) / plotWidth * (state.trendPoints.length - 1))));
+  if (index !== state.trendHoverIndex) {
+    state.trendHoverIndex = index;
+    drawTrend(state.trendPoints);
+  }
+  const point = state.trendPoints[index];
+  const pointY = geometry.pad.top + (geometry.height - geometry.pad.top - geometry.pad.bottom) * (1 - point.registrations / geometry.max);
+  const tooltip = $("#trendTooltip");
+  const chartWrap = canvas.parentElement;
+  const tooltipX = Math.max(74, Math.min(chartWrap.clientWidth - 74, canvas.offsetLeft + geometry.pad.left + plotWidth *
+    (state.trendPoints.length === 1 ? .5 : index / (state.trendPoints.length - 1))));
+  tooltip.innerHTML = "<strong>" + esc(point.month) + "</strong><span>" + count(point.registrations) + " 条登记</span>";
+  tooltip.style.left = tooltipX + "px";
+  tooltip.style.top = Math.max(30, canvas.offsetTop + pointY) + "px";
+  tooltip.classList.add("visible");
 }
 
 function drawFeatures() {
@@ -248,6 +306,8 @@ function loadCategoryRecords() {
 }
 
 function resetRecordView() {
+  state.trendHoverIndex = null;
+  $("#trendTooltip").classList.remove("visible");
   state.recordsLoaded = false;
   state.loadingRecords = false;
   state.filterOptions = null;
@@ -303,6 +363,9 @@ async function init() {
 
 document.querySelectorAll(".category-button").forEach((button) => button.addEventListener("click", () => switchCategory(button.dataset.category)));
 ["#searchInput", "#stateFilter", "#districtFilter", "#statusFilter", "#technologyFilter"].forEach((selector) => $(selector).addEventListener("input", applyFilters));
+$("#trendChart").addEventListener("pointermove", updateTrendTooltip);
+$("#trendChart").addEventListener("pointerleave", clearTrendHover);
+$("#trendChart").addEventListener("blur", clearTrendHover);
 $("#trendMode").addEventListener("change", () => state.recordsLoaded ? queryRecords() : updateMetrics());
 $("#pageSize").addEventListener("change", (event) => { state.pageSize = Number(event.target.value); state.page = 1; queryRecords(); });
 $("#prevPage").addEventListener("click", () => { state.page--; queryRecords(); });
