@@ -1,11 +1,10 @@
 name: MaStR balcony dashboard
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
   schedule:
-    - cron: "30 2 * * 1"
+    # GitHub Actions uses UTC: every Monday at 05:30 UTC (13:30 Asia/Shanghai).
+    - cron: "30 5 * * 1"
 
 permissions:
   contents: read
@@ -14,8 +13,6 @@ permissions:
 
 jobs:
   analyse-and-deploy:
-    # A deploy-only recovery commit must not start another full export scan.
-    if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Deploy existing MaStR dashboard')
     concurrency:
       group: mastr-pages
       cancel-in-progress: false

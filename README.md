@@ -6,6 +6,8 @@
 
 手动运行：在 GitHub 仓库的 **Actions → MaStR balcony dashboard → Run workflow** 启动。成功后，Pages 看板和同一次运行的 artifact 分别提供压缩交互明细、完整筛选 CSV、月度/年度汇总、特征统计和中文分析报告。完整 ZIP 只写入 runner 临时目录，不提交到仓库。
 
+自动更新：每周一 `05:30 UTC`（北京时间周一 `13:30`）运行一次；同一轮任务先读取官方最新全量导出包，再生成筛选数据、分析结果和 Pages 看板。也可以通过上面的手动入口提前更新。
+
 本地只做小样本验证时，可运行：
 
 ```powershell
