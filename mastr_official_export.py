@@ -27,7 +27,7 @@ import sqlite3
 import sys
 import time
 import zipfile
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
@@ -115,6 +115,23 @@ FEATURE_FIELDS = {
     "capacity": ALIASES["capacity"],
     "name": ALIASES["name"],
 }
+
+PERFORMANCE_METRICS: Dict[str, Tuple[Tuple[str, str, str, Tuple[str, ...]], ...]] = {
+    "pv": (
+        ("power", "平均净额定功率", "kW", ALIASES["power"]),
+        ("modules", "平均组件数量", "块", ALIASES["modules"]),
+    ),
+    "storage": (
+        ("capacity", "平均可用存储容量", "kWh", ALIASES["capacity"]),
+    ),
+}
+
+FILTERED_OUTPUT_FIELDS = (
+    F_ID, F_NAME, F_STATUS, F_ENERGY, F_POWER, F_REGISTERED, F_STATE,
+    F_DISTRICT, F_MUNICIPALITY, F_ZIP, F_TOWN, F_SOLAR_TYPE, F_SOLAR_TECH,
+    F_MODULES, F_DIRECTION, F_INCLINATION, F_BUILDING_USE, F_STORAGE_TECH,
+    F_CAPACITY, F_COUPLING,
+)
 
 DEFAULT_WORK_DIR = Path(
     os.environ.get(
@@ -214,6 +231,166 @@ def parse_number(raw: str) -> Optional[float]:
         return float(value)
     except ValueError:
         return None
+
+
+def _previous_month_key(as_of: date) -> str:
+    year = as_of.year
+    month = as_of.month - 1
+    if not month:
+        year -= 1
+        month = 12
+    return f"{year:04d}-{month:02d}"
+
+
+def _previous_year_period(period: str) -> str:
+    return f"{int(period[:4]) - 1:04d}{period[4:]}"
+
+
+def _latest_complete_quarter(as_of: date) -> str:
+    year = as_of.year
+    quarter = (as_of.month - 1) // 3 + 1
+    quarter -= 1
+    if not quarter:
+        year -= 1
+        quarter = 4
+    return f"{year:04d}-Q{quarter}"
+
+
+def _percentage_change(current: float, previous: float) -> Optional[float]:
+    if not previous:
+        return None
+    return (current - previous) / previous * 100
+
+
+def _growth_record(period: str, current: int, previous: int) -> Dict[str, object]:
+    change = current - previous
+    if not previous:
+        direction = "new" if current else "flat"
+    elif change > 0:
+        direction = "up"
+    elif change < 0:
+        direction = "down"
+    else:
+        direction = "flat"
+    return {
+        "period": period,
+        "registrations": current,
+        "comparison_period": _previous_year_period(period),
+        "comparison_registrations": previous,
+        "change": change,
+        "yoy_pct": _percentage_change(current, previous),
+        "direction": direction,
+    }
+
+
+def _average_series(
+    buckets: Mapping[str, Sequence[float]],
+) -> List[Dict[str, object]]:
+    averages = {
+        period: values[0] / values[1]
+        for period, values in buckets.items()
+        if values[1]
+    }
+    result: List[Dict[str, object]] = []
+    for period in sorted(averages):
+        average = averages[period]
+        previous = averages.get(_previous_year_period(period))
+        result.append(
+            {
+                "period": period,
+                "average": round(average, 6),
+                "observations": int(buckets[period][1]),
+                "previous_year_average": round(previous, 6) if previous is not None else None,
+                "yoy_pct": round(_percentage_change(average, previous), 4)
+                if previous is not None
+                else None,
+            }
+        )
+    return result
+
+
+def dashboard_performance(
+    rows_by_category: Mapping[str, Iterable[Mapping[str, str]]],
+    as_of: date,
+) -> Dict[str, object]:
+    """Build comparable registration and equipment trends from filtered records.
+
+    The current calendar month and quarter are excluded from period comparisons.
+    Annual device averages use January through the last completed month for every
+    year, keeping the current year comparable with the prior year.
+    """
+    complete_month = _previous_month_key(as_of)
+    complete_quarter = _latest_complete_quarter(as_of)
+    cutoff_month_number = int(complete_month[-2:])
+    categories: Dict[str, object] = {}
+
+    for category, metric_definitions in PERFORMANCE_METRICS.items():
+        monthly_registrations: Counter[str] = Counter()
+        quarterly_registrations: Counter[str] = Counter()
+        monthly_metrics = {
+            key: defaultdict(lambda: [0.0, 0.0])
+            for key, _label, _unit, _aliases in metric_definitions
+        }
+        for row in rows_by_category.get(category, ()):
+            registered = parse_date(get_value(row, ALIASES["registered"]))
+            if registered is None:
+                continue
+            month = registered.strftime("%Y-%m")
+            quarter = f"{registered.year:04d}-Q{(registered.month - 1) // 3 + 1}"
+            monthly_registrations[month] += 1
+            quarterly_registrations[quarter] += 1
+            for key, _label, _unit, aliases in metric_definitions:
+                value = parse_number(get_value(row, aliases))
+                if value is None:
+                    continue
+                bucket = monthly_metrics[key][month]
+                bucket[0] += value
+                bucket[1] += 1
+
+        metrics: Dict[str, object] = {}
+        for key, label, unit, _aliases in metric_definitions:
+            month_buckets = {
+                month: values
+                for month, values in monthly_metrics[key].items()
+                if month <= complete_month
+            }
+            annual_buckets: Dict[str, List[float]] = defaultdict(lambda: [0.0, 0.0])
+            for month, values in month_buckets.items():
+                if int(month[-2:]) > cutoff_month_number:
+                    continue
+                annual = annual_buckets[month[:4]]
+                annual[0] += values[0]
+                annual[1] += values[1]
+            metrics[key] = {
+                "label": label,
+                "unit": unit,
+                "monthly": _average_series(month_buckets),
+                "annual": _average_series(annual_buckets),
+            }
+
+        categories[category] = {
+            "registration_yoy": {
+                "month": _growth_record(
+                    complete_month,
+                    monthly_registrations[complete_month],
+                    monthly_registrations[_previous_year_period(complete_month)],
+                ),
+                "quarter": _growth_record(
+                    complete_quarter,
+                    quarterly_registrations[complete_quarter],
+                    quarterly_registrations[_previous_year_period(complete_quarter)],
+                ),
+            },
+            "metrics": metrics,
+        }
+
+    return {
+        "as_of_date": as_of.isoformat(),
+        "latest_complete_month": complete_month,
+        "latest_complete_quarter": complete_quarter,
+        "annual_comparable_through_month": cutoff_month_number,
+        "categories": categories,
+    }
 
 
 def discover_export_url() -> str:
@@ -487,7 +664,7 @@ class OutputWriters:
         if category not in self.csv_files:
             filename = "balcony_pv.csv" if category == "pv" else "balcony_storage.csv"
             output = (self.output_dir / filename).open("w", newline="", encoding="utf-8-sig")
-            columns = list(fields)
+            columns = list(dict.fromkeys([*fields, *FILTERED_OUTPUT_FIELDS]))
             for extra in ("Kategorie", "Quelle"):
                 if extra not in columns:
                     columns.append(extra)
@@ -632,12 +809,18 @@ def insight_lines(stats: CategoryStats) -> List[str]:
     return lines
 
 
+def filtered_csv_rows(path: Path) -> Iterator[Dict[str, str]]:
+    with path.open("r", encoding="utf-8-sig", newline="") as source:
+        yield from csv.DictReader(source)
+
+
 def write_analysis(
     source_url: str,
     export_name: str,
     generated_at: str,
     stats: Mapping[str, CategoryStats],
     brand_summary: Mapping[str, object],
+    performance: Mapping[str, object],
     output_dir: Path,
     site_data_dir: Path,
     scanned: int,
@@ -698,6 +881,7 @@ def write_analysis(
         ("monthly.json", monthly),
         ("features.json", features),
         ("brands.json", brand_summary),
+        ("performance.json", performance),
     ):
         (site_data_dir / filename).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -707,6 +891,7 @@ def write_analysis(
         ("mastr_dashboard_monthly.json", monthly),
         ("mastr_dashboard_features.json", features),
         ("mastr_dashboard_brands.json", brand_summary),
+        ("mastr_dashboard_performance.json", performance),
     ):
         (output_dir / filename).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -730,6 +915,15 @@ def write_analysis(
     for key, label in (("pv", "阳台光伏"), ("storage", "阳台储能")):
         report += [f"### {label}", ""]
         report += [f"- {line}" for line in insights[key]]
+        registration_yoy = performance["categories"][key]["registration_yoy"]
+        for period_name, period_label in (("month", "最近完整月"), ("quarter", "最近完整季度")):
+            item = registration_yoy[period_name]
+            yoy = item["yoy_pct"]
+            yoy_text = "无同期基数" if yoy is None else f"{yoy:+.1f}%"
+            report.append(
+                f"- {period_label} **{item['period']}**：{item['registrations']:,} 条，"
+                f"较 {item['comparison_period']} {yoy_text}。"
+            )
         report.append("")
     report += [
         "## 口径与限制",
@@ -811,6 +1005,13 @@ def process(source_path: Path, source_url: str, output_dir: Path, site_dir: Path
     storage_csv = output_dir / "balcony_storage.csv"
     with storage_csv.open("r", encoding="utf-8-sig", newline="") as source:
         brand_summary = brand_keyword_summary(csv.DictReader(source))
+    performance = dashboard_performance(
+        {
+            "pv": filtered_csv_rows(output_dir / "balcony_pv.csv"),
+            "storage": filtered_csv_rows(storage_csv),
+        },
+        datetime.fromisoformat(generated_at).date(),
+    )
 
     summary = write_analysis(
         source_url,
@@ -818,6 +1019,7 @@ def process(source_path: Path, source_url: str, output_dir: Path, site_dir: Path
         generated_at,
         stats,
         brand_summary,
+        performance,
         output_dir,
         site_data_dir,
         scanned,

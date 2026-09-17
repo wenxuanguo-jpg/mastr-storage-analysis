@@ -3,6 +3,7 @@ const state = {
   monthly: null,
   features: null,
   brands: null,
+  performance: null,
   filteredBrandStats: null,
   category: "pv",
   worker: null,
@@ -26,6 +27,7 @@ const $ = (selector) => document.querySelector(selector);
 const nf = new Intl.NumberFormat("zh-CN");
 const count = (value) => nf.format(Number(value || 0));
 const percent = (value) => Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 }) + "%";
+const decimal = (value, digits = 2) => Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: digits });
 const statePalette = ["#16816b", "#e4a22d", "#297fb5", "#c65b68", "#896dc0", "#629b61", "#d1783a", "#4a9398"];
 const brandPalette = ["#16816b", "#e4a22d", "#297fb5", "#c65b68", "#896dc0", "#629b61"];
 const esc = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) =>
@@ -46,6 +48,24 @@ function recordDate(raw) {
 function formatDate(raw) {
   const value = recordDate(raw);
   return value.match(/^\d{4}-\d{2}-\d{2}$/) ? value.slice(8, 10) + "." + value.slice(5, 7) + "." + value.slice(0, 4) : (raw || "--");
+}
+
+function formatPeriod(period) {
+  const value = String(period || "");
+  const month = value.match(/^(\d{4})-(\d{2})$/);
+  if (month) return month[1] + "年" + Number(month[2]) + "月";
+  const quarter = value.match(/^(\d{4})-Q([1-4])$/);
+  if (quarter) return quarter[1] + "年Q" + quarter[2];
+  return value || "--";
+}
+
+function yoyText(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "无同期基数";
+  return "同比 " + (value > 0 ? "+" : "") + percent(value);
+}
+
+function metricValue(value, unit) {
+  return decimal(value) + " " + unit;
 }
 
 function activeFilter() {
@@ -186,6 +206,129 @@ function updateTrendTooltip(event) {
   if (index === state.trendHoverIndex) return;
   state.trendHoverIndex = index;
   showTrendHover(index);
+}
+
+function renderRegistrationYoy() {
+  const panel = $("#registrationYoyPanel");
+  const categoryPerformance = state.performance && state.performance.categories && state.performance.categories[state.category];
+  if (!categoryPerformance || !categoryPerformance.registration_yoy) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  const registration = categoryPerformance.registration_yoy;
+  const card = (label, item) => {
+    const direction = item.direction || "flat";
+    const verb = direction === "up" ? "同比增长" : direction === "down" ? "同比下降" : direction === "new" ? "新增同期口径" : "同比持平";
+    const change = item.change > 0 ? "+" + count(item.change) : count(item.change);
+    return '<article class="registration-yoy-item"><span>' + esc(label) + " · " + esc(formatPeriod(item.period)) + '</span><strong>' + count(item.registrations) + " 条</strong><small>对比 " + esc(formatPeriod(item.comparison_period)) + " · " + count(item.comparison_registrations) + " 条 · " + change + " 条</small>" +
+      '<div class="registration-yoy-change ' + esc(direction) + '"><i></i>' + esc(verb) + " · " + esc(yoyText(item.yoy_pct)) + "</div></article>";
+  };
+  $("#registrationYoyCards").innerHTML = card("最近完整月", registration.month) + card("最近完整季度", registration.quarter);
+  $("#registrationYoyNote").textContent = "月度 " + formatPeriod(registration.month.period) + " · 季度 " + formatPeriod(registration.quarter.period);
+}
+
+function metricTrendHtml(key, metric, mode) {
+  const latest = (metric[mode] || []).at(-1);
+  const caption = latest
+    ? formatPeriod(latest.period) + " " + metricValue(latest.average, metric.unit) + " · " + yoyText(latest.yoy_pct)
+    : "暂无可用数值字段";
+  return '<article class="equipment-trend-item"><h3>' + esc(metric.label) + '</h3><p>' + esc(mode === "annual" ? "同月累计口径的年度平均" : "按完整登记月计算的平均值") + '</p><div class="metric-chart-wrap"><canvas id="metricChart-' + esc(key) + '" class="metric-chart" tabindex="0" aria-label="' + esc(metric.label) + '趋势图"></canvas><div id="metricTooltip-' + esc(key) + '" class="metric-chart-tooltip" role="status" aria-live="polite"></div></div><p class="metric-chart-caption">' + esc(caption) + "</p></article>";
+}
+
+function drawMetricTrend(key, metric, mode) {
+  const points = metric[mode] || [];
+  const canvas = $("#metricChart-" + key);
+  const tooltip = $("#metricTooltip-" + key);
+  if (!canvas || !tooltip) return;
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, rect.width * dpr);
+  canvas.height = Math.max(1, rect.height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const width = rect.width;
+  const height = rect.height;
+  ctx.clearRect(0, 0, width, height);
+  if (!points.length) {
+    ctx.fillStyle = "#6d7a7e";
+    ctx.font = "12px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText("暂无可用数值字段", width / 2, height / 2);
+    return;
+  }
+  const pad = { top: 16, right: 10, bottom: 31, left: 47 };
+  const plotWidth = width - pad.left - pad.right;
+  const plotHeight = height - pad.top - pad.bottom;
+  const values = points.map((item) => Number(item.average));
+  const low = Math.min(...values);
+  const high = Math.max(...values);
+  const span = Math.max(high - low, Math.abs(high) * .08, .1);
+  const min = Math.max(0, low - span * .22);
+  const max = high + span * .22;
+  const x = (index) => pad.left + plotWidth * (points.length === 1 ? .5 : index / (points.length - 1));
+  const y = (value) => pad.top + plotHeight * (1 - (value - min) / (max - min));
+  ctx.strokeStyle = "#e6eeeb";
+  ctx.fillStyle = "#72817e";
+  ctx.font = "10px system-ui";
+  ctx.textAlign = "right";
+  for (let index = 0; index <= 3; index++) {
+    const value = max - (max - min) * index / 3;
+    const lineY = pad.top + plotHeight * index / 3;
+    ctx.beginPath(); ctx.moveTo(pad.left, lineY); ctx.lineTo(width - pad.right, lineY); ctx.stroke();
+    ctx.fillText(decimal(value), pad.left - 7, lineY + 3);
+  }
+  ctx.strokeStyle = "#297fb5";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  points.forEach((point, index) => index ? ctx.lineTo(x(index), y(point.average)) : ctx.moveTo(x(index), y(point.average)));
+  ctx.stroke();
+  ctx.fillStyle = "#297fb5";
+  points.forEach((point, index) => {
+    ctx.beginPath(); ctx.arc(x(index), y(point.average), 3, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.fillStyle = "#72817e";
+  ctx.textAlign = "center";
+  const step = Math.max(1, Math.ceil(points.length / 5));
+  points.forEach((point, index) => {
+    if (index % step === 0 || index === points.length - 1) ctx.fillText(formatPeriod(point.period), x(index), height - 9);
+  });
+  const show = (event) => {
+    const localX = event.clientX - canvas.getBoundingClientRect().left;
+    if (localX < pad.left - 12 || localX > width - pad.right + 12) {
+      tooltip.classList.remove("visible");
+      return;
+    }
+    const index = Math.max(0, Math.min(points.length - 1, Math.round((localX - pad.left) / plotWidth * (points.length - 1))));
+    const point = points[index];
+    const tooltipX = Math.max(78, Math.min(canvas.parentElement.clientWidth - 78, canvas.offsetLeft + x(index)));
+    tooltip.innerHTML = "<strong>" + esc(formatPeriod(point.period)) + "</strong><span>平均 " + esc(metricValue(point.average, metric.unit)) + "</span><span>" + esc(yoyText(point.yoy_pct)) + " · 有效 " + count(point.observations) + " 条</span>";
+    tooltip.style.left = tooltipX + "px";
+    tooltip.style.top = Math.max(28, canvas.offsetTop + y(point.average)) + "px";
+    tooltip.classList.add("visible");
+  };
+  canvas.addEventListener("pointermove", show);
+  canvas.addEventListener("pointerleave", () => tooltip.classList.remove("visible"));
+  canvas.addEventListener("blur", () => tooltip.classList.remove("visible"));
+}
+
+function renderEquipmentTrends() {
+  const panel = $("#equipmentTrendPanel");
+  const categoryPerformance = state.performance && state.performance.categories && state.performance.categories[state.category];
+  if (!categoryPerformance || !categoryPerformance.metrics) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  const mode = $("#equipmentTrendMode").value;
+  const metrics = categoryPerformance.metrics;
+  $("#equipmentTrendTitle").textContent = state.category === "pv" ? "平均设备规模趋势" : "平均电池容量趋势";
+  $("#equipmentTrendGrid").innerHTML = Object.entries(metrics).map(([key, metric]) => metricTrendHtml(key, metric, mode)).join("");
+  const cutoff = state.performance.annual_comparable_through_month;
+  $("#equipmentTrendMethod").textContent = mode === "annual"
+    ? "年度平均按每个年份 1 至 " + cutoff + " 月的有效登记计算，并与上一年同月累计均值比较。"
+    : "月度平均仅显示已结束的完整登记月；鼠标悬停可查看有效样本数及去年同月平均值的同比变化。";
+  Object.entries(metrics).forEach(([key, metric]) => drawMetricTrend(key, metric, mode));
 }
 
 function drawFeatures() {
@@ -329,6 +472,8 @@ function updateMetrics() {
   $("#scopeText").textContent = state.category === "pv"
     ? "阳台光伏 = 登记日期 > 2023-01-01 且 Art der Solaranlage 精确等于 Steckerfertige Solaranlage (sog. Balkonkraftwerk)。"
     : "阳台储能 = 登记日期 > 2023-01-01、Nettonennleistung der Einheit = 0.8 kW、Energieträger = Speicher。官方 CSV 的 0,8 已按数值 0.8 处理。";
+  renderRegistrationYoy();
+  renderEquipmentTrends();
   if (!state.recordsLoaded) {
     drawTrend(points);
     drawStateBars((state.features[state.category].state || []).slice(0, 8));
@@ -463,16 +608,18 @@ function downloadCurrentCsv() {
 
 async function init() {
   try {
-    const [summary, monthly, features, brands] = await Promise.all([
+    const [summary, monthly, features, brands, performance] = await Promise.all([
       fetch("data/summary.json").then((response) => response.json()),
       fetch("data/monthly.json").then((response) => response.json()),
       fetch("data/features.json").then((response) => response.json()),
-      fetch("data/brands.json").then((response) => response.ok ? response.json() : null)
+      fetch("data/brands.json").then((response) => response.ok ? response.json() : null),
+      fetch("data/performance.json").then((response) => response.ok ? response.json() : null)
     ]);
     state.summary = summary;
     state.monthly = monthly;
     state.features = features;
     state.brands = brands;
+    state.performance = performance;
     $("#exportName").textContent = state.summary.source_export;
     $("#generatedAt").textContent = "生成于 " + state.summary.generated_at_utc;
     $("#pvSwitchCount").textContent = count(state.summary.categories.pv.matching_records) + " 条";
@@ -497,6 +644,7 @@ $("#brandPie").addEventListener("pointermove", updateBrandPieTooltip);
 $("#brandPie").addEventListener("pointerleave", clearBrandPieTooltip);
 $("#brandPie").addEventListener("blur", clearBrandPieTooltip);
 $("#trendMode").addEventListener("change", () => state.recordsLoaded ? queryRecords() : updateMetrics());
+$("#equipmentTrendMode").addEventListener("change", renderEquipmentTrends);
 $("#pageSize").addEventListener("change", (event) => { state.pageSize = Number(event.target.value); state.page = 1; queryRecords(); });
 $("#prevPage").addEventListener("click", () => { state.page--; queryRecords(); });
 $("#nextPage").addEventListener("click", () => { state.page++; queryRecords(); });

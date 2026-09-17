@@ -7,10 +7,11 @@ import csv
 import gzip
 import json
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable
 
-from mastr_official_export import brand_keyword_summary, compact_record
+from mastr_official_export import brand_keyword_summary, compact_record, dashboard_performance
 
 
 FILES = {
@@ -69,6 +70,15 @@ def main() -> int:
     )
 
     summary = json.loads((data_dir / "summary.json").read_text(encoding="utf-8"))
+    generated_at = str(summary.get("generated_at_utc", ""))
+    as_of = datetime.fromisoformat(generated_at.replace("Z", "+00:00")).date()
+    performance = dashboard_performance(
+        {category: read_rows(source) for category, source in expected.items()},
+        as_of,
+    )
+    (data_dir / "performance.json").write_text(
+        json.dumps(performance, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     for category, expected_count in counts.items():
         actual_count = int(summary["categories"][category]["matching_records"])
         if actual_count != expected_count:
@@ -77,6 +87,9 @@ def main() -> int:
             )
     if int(brand_summary["total_records"]) != counts["storage"]:
         raise RuntimeError("Brand summary total does not equal restored storage records")
+    for category, metric in (("pv", "power"), ("storage", "capacity")):
+        if not performance["categories"][category]["metrics"][metric]["monthly"]:
+            print(f"Warning: restored {category} CSV has no {metric} observations")
 
     print(f"Restored dashboard data: PV {counts['pv']:,}; storage {counts['storage']:,}")
     return 0

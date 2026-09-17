@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MaStR Balcony Monitor</title>
-  <link rel="stylesheet" href="styles.css?v=20260917-smooth-hover">
+  <link rel="stylesheet" href="styles.css?v=20260917-yoy-device-trends">
 </head>
 <body>
   <header class="topbar">
@@ -26,10 +26,19 @@
       <article class="metric-card"><span class="metric-label">峰值月份</span><strong id="metricPeak">--</strong><span id="metricPeakNote">--</span></article>
       <article class="metric-card"><span class="metric-label">当前筛选</span><strong id="metricFilter">全量</strong><span id="metricLoaded">明细按需加载</span></article>
     </section>
+    <section id="registrationYoyPanel" class="panel registration-yoy-panel">
+      <div class="panel-heading"><div><p class="panel-kicker">YEAR-ON-YEAR CHANGE</p><h2>登记同比动向</h2></div><span id="registrationYoyNote" class="panel-note">完整日历期间</span></div>
+      <div id="registrationYoyCards" class="registration-yoy-grid"></div>
+    </section>
     <section class="insight-band"><div class="section-kicker">自动观察</div><div id="insightText" class="insight-text">正在生成观察结果...</div></section>
     <section class="chart-grid">
       <article class="panel trend-panel"><div class="panel-heading"><div><p class="panel-kicker">REGISTRATION PULSE</p><h2>月度登记趋势</h2></div><select id="trendMode" class="compact-select" aria-label="趋势视图"><option value="monthly">月度</option><option value="annual">年度</option></select></div><div class="chart-wrap"><canvas id="trendChart" tabindex="0" aria-label="月度登记趋势图：移动鼠标到数据点查看登记数"></canvas><div id="trendFocus" class="trend-focus" aria-hidden="true"><i></i></div><div id="trendTooltip" class="trend-tooltip" role="status" aria-live="polite"></div></div><div id="trendCaption" class="chart-caption"></div></article>
       <article class="panel distribution-panel"><div class="panel-heading"><div><p class="panel-kicker">REGIONAL MIX</p><h2>登记州分布</h2></div><span class="panel-note">Top 8</span></div><div id="stateBars" class="bars"></div></article>
+    </section>
+    <section id="equipmentTrendPanel" class="panel equipment-trend-panel">
+      <div class="panel-heading"><div><p class="panel-kicker">AVERAGE DEVICE SCALE</p><h2 id="equipmentTrendTitle">平均设备规模趋势</h2></div><select id="equipmentTrendMode" class="compact-select" aria-label="设备规模趋势视图"><option value="monthly">月度平均</option><option value="annual">年度平均</option></select></div>
+      <div id="equipmentTrendGrid" class="equipment-trend-grid"></div>
+      <p id="equipmentTrendMethod" class="equipment-trend-method"></p>
     </section>
     <section class="panel feature-panel">
       <div class="panel-heading"><div><p class="panel-kicker">DEVICE PROFILE</p><h2>设备与运行特征</h2></div><span class="panel-note">当前品类 Top 5</span></div>
@@ -59,6 +68,6 @@
     <section class="notes"><div><span class="section-kicker">口径说明</span><p id="scopeText">加载中</p></div><a href="https://www.marktstammdatenregister.de/MaStR/Einheit/Einheiten/ErweiterteOeffentlicheEinheitenuebersicht" target="_blank" rel="noreferrer">打开官方 MaStR 页面 ↗</a></section>
   </main>
   <footer class="footer">数据来源：Bundesnetzagentur / Marktstammdatenregister · 本页面不代表销量</footer>
-  <script src="app.js?v=20260917-table10-smooth-hover"></script>
+  <script src="app.js?v=20260917-yoy-device-trends"></script>
 </body>
 </html>
