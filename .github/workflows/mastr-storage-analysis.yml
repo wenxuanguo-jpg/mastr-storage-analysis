@@ -72,6 +72,7 @@ jobs:
             outputs/mastr_dashboard_summary.json
             outputs/mastr_dashboard_monthly.json
             outputs/mastr_dashboard_features.json
+            outputs/mastr_dashboard_brands.json
             outputs/mastr_dashboard_analysis.md
           if-no-files-found: error
           retention-days: 14

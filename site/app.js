@@ -2,6 +2,8 @@ const state = {
   summary: null,
   monthly: null,
   features: null,
+  brands: null,
+  filteredBrandStats: null,
   category: "pv",
   worker: null,
   recordsLoaded: false,
@@ -16,13 +18,16 @@ const state = {
   resultCount: 0,
   trendPoints: [],
   trendHoverIndex: null,
-  trendGeometry: null
+  trendGeometry: null,
+  brandPieSlices: []
 };
 
 const $ = (selector) => document.querySelector(selector);
 const nf = new Intl.NumberFormat("zh-CN");
 const count = (value) => nf.format(Number(value || 0));
+const percent = (value) => Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: 1 }) + "%";
 const statePalette = ["#16816b", "#e4a22d", "#297fb5", "#c65b68", "#896dc0", "#629b61", "#d1783a", "#4a9398"];
+const brandPalette = ["#16816b", "#e4a22d", "#297fb5", "#c65b68", "#896dc0", "#629b61"];
 const esc = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[c]
 );
@@ -193,6 +198,119 @@ function drawFeatures() {
   }).join("");
 }
 
+function brandStatsForView() {
+  return state.recordsLoaded && state.filteredBrandStats ? state.filteredBrandStats : state.brands;
+}
+
+function clearBrandPieTooltip() {
+  $("#brandPieTooltip").classList.remove("visible");
+}
+
+function drawBrandBars(brandStats) {
+  const brands = brandStats.brands || [];
+  const max = Math.max(...brands.map((item) => Number(item.registrations || 0)), 1);
+  $("#brandBars").innerHTML = brands.map((item, index) => {
+    const share = Number(brandStats.total_records) ? Number(item.registrations || 0) / Number(brandStats.total_records) * 100 : 0;
+    const description = item.brand + " · " + count(item.registrations) + " 条登记，占阳台储能 " + percent(share);
+    return '<div class="brand-bar-row" tabindex="0" role="listitem" aria-label="' + esc(description) + '" style="--brand-color:' + brandPalette[index % brandPalette.length] + '">' +
+      '<span class="brand-bar-label">' + esc(item.brand) + '</span><span class="brand-bar-track"><i class="brand-bar-fill" style="width:' +
+      (Number(item.registrations || 0) / max * 100) + '%"></i></span><span class="brand-bar-value">' + count(item.registrations) + "</span>" +
+      '<span class="brand-bar-tooltip" role="tooltip"><strong>' + esc(item.brand) + "</strong><span>" + count(item.registrations) + " 条登记 · " + percent(share) + "</span></span></div>";
+  }).join("");
+}
+
+function drawBrandPie(brandStats) {
+  const canvas = $("#brandPie");
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = rect.width;
+  const height = rect.height;
+  canvas.width = Math.max(1, width * dpr);
+  canvas.height = Math.max(1, height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, width, height);
+  const total = Number(brandStats.total_records || 0);
+  const branded = Number(brandStats.any_selected_brand_records || 0);
+  const entries = [
+    { label: "六品牌关键词命中", value: branded, color: "#16816b" },
+    { label: "其他阳台储能登记", value: Math.max(0, total - branded), color: "#dce7e2" }
+  ];
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radius = Math.max(18, Math.min(width, height) / 2 - 20);
+  const innerRadius = radius * .58;
+  let start = 0;
+  state.brandPieSlices = [];
+  entries.forEach((item) => {
+    const angle = total ? item.value / total * Math.PI * 2 : 0;
+    ctx.beginPath();
+    ctx.moveTo(centerX, centerY);
+    ctx.fillStyle = item.color;
+    ctx.arc(centerX, centerY, radius, start - Math.PI / 2, start + angle - Math.PI / 2);
+    ctx.closePath();
+    ctx.fill();
+    state.brandPieSlices.push({ ...item, start, end: start + angle, centerX, centerY, radius, innerRadius });
+    start += angle;
+  });
+  ctx.beginPath();
+  ctx.fillStyle = "#ffffff";
+  ctx.arc(centerX, centerY, innerRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#17242a";
+  ctx.font = "700 21px system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText(percent(brandStats.selected_brand_share_pct), centerX, centerY - 2);
+  ctx.fillStyle = "#6d7a7e";
+  ctx.font = "11px system-ui";
+  ctx.fillText("六品牌合计", centerX, centerY + 17);
+  $("#brandPieLegend").innerHTML = entries.map((item) =>
+    '<span><i style="background:' + item.color + '"></i>' + esc(item.label) + " · " + count(item.value) + " 条</span>"
+  ).join("");
+}
+
+function updateBrandPieTooltip(event) {
+  const canvas = $("#brandPie");
+  const rect = canvas.getBoundingClientRect();
+  const first = state.brandPieSlices[0];
+  if (!first) return;
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const distance = Math.hypot(x - first.centerX, y - first.centerY);
+  if (distance < first.innerRadius || distance > first.radius) {
+    clearBrandPieTooltip();
+    return;
+  }
+  const angle = (Math.atan2(y - first.centerY, x - first.centerX) + Math.PI / 2 + Math.PI * 2) % (Math.PI * 2);
+  const slice = state.brandPieSlices.find((item) => angle >= item.start && angle <= item.end) || state.brandPieSlices.at(-1);
+  const tooltip = $("#brandPieTooltip");
+  const total = Number(brandStatsForView().total_records || 0);
+  tooltip.innerHTML = "<strong>" + esc(slice.label) + "</strong><span>" + count(slice.value) + " 条 · " + percent(total ? slice.value / total * 100 : 0) + "</span>";
+  tooltip.style.left = x + "px";
+  tooltip.style.top = y + "px";
+  tooltip.classList.add("visible");
+}
+
+function renderBrandPanel() {
+  const panel = $("#brandPanel");
+  const visible = state.category === "storage";
+  panel.classList.toggle("hidden", !visible);
+  clearBrandPieTooltip();
+  if (!visible) return;
+  const brandStats = brandStatsForView();
+  if (!brandStats) {
+    $("#brandBars").innerHTML = '<div class="empty-state">品牌统计正在加载</div>';
+    $("#brandPieLegend").innerHTML = "";
+    return;
+  }
+  const filtered = state.recordsLoaded && state.filteredBrandStats && activeFilter();
+  $("#brandPanelNote").textContent = filtered ? "随当前原表筛选更新" : "阳台储能原表全量";
+  $("#brandBarCaption").textContent = count(brandStats.total_records) + " 条原表记录";
+  $("#brandShareCaption").textContent = percent(brandStats.selected_brand_share_pct) + " 的登记命中六品牌";
+  drawBrandBars(brandStats);
+  drawBrandPie(brandStats);
+}
+
 function updateMetrics() {
   const info = categoryInfo();
   $("#metricCount").textContent = count(info.matching_records);
@@ -213,6 +331,7 @@ function updateMetrics() {
     drawStateBars((state.features[state.category].state || []).slice(0, 8));
     drawFeatures();
   }
+  renderBrandPanel();
 }
 
 function renderTable() {
@@ -273,9 +392,11 @@ function handleWorkerMessage(event) {
     state.pageRows = message.rows;
     state.resultCount = message.total;
     state.totalPages = message.totalPages;
+    state.filteredBrandStats = message.brandStats;
     drawTrend(message.trend);
     drawStateBars(message.states);
     drawFeatures();
+    renderBrandPanel();
     renderTable();
   } else if (message.type === "download") {
     const link = document.createElement("a");
@@ -311,6 +432,7 @@ function resetRecordView() {
   state.recordsLoaded = false;
   state.loadingRecords = false;
   state.filterOptions = null;
+  state.filteredBrandStats = null;
   state.page = 1;
   state.pageRows = [];
   state.resultCount = 0;
@@ -338,14 +460,16 @@ function downloadCurrentCsv() {
 
 async function init() {
   try {
-    const [summary, monthly, features] = await Promise.all([
+    const [summary, monthly, features, brands] = await Promise.all([
       fetch("data/summary.json").then((response) => response.json()),
       fetch("data/monthly.json").then((response) => response.json()),
-      fetch("data/features.json").then((response) => response.json())
+      fetch("data/features.json").then((response) => response.json()),
+      fetch("data/brands.json").then((response) => response.ok ? response.json() : null)
     ]);
     state.summary = summary;
     state.monthly = monthly;
     state.features = features;
+    state.brands = brands;
     $("#exportName").textContent = state.summary.source_export;
     $("#generatedAt").textContent = "生成于 " + state.summary.generated_at_utc;
     $("#pvSwitchCount").textContent = count(state.summary.categories.pv.matching_records) + " 条";
@@ -366,6 +490,9 @@ document.querySelectorAll(".category-button").forEach((button) => button.addEven
 $("#trendChart").addEventListener("pointermove", updateTrendTooltip);
 $("#trendChart").addEventListener("pointerleave", clearTrendHover);
 $("#trendChart").addEventListener("blur", clearTrendHover);
+$("#brandPie").addEventListener("pointermove", updateBrandPieTooltip);
+$("#brandPie").addEventListener("pointerleave", clearBrandPieTooltip);
+$("#brandPie").addEventListener("blur", clearBrandPieTooltip);
 $("#trendMode").addEventListener("change", () => state.recordsLoaded ? queryRecords() : updateMetrics());
 $("#pageSize").addEventListener("change", (event) => { state.pageSize = Number(event.target.value); state.page = 1; queryRecords(); });
 $("#prevPage").addEventListener("click", () => { state.page--; queryRecords(); });

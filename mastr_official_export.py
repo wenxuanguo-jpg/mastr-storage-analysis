@@ -49,6 +49,14 @@ DATE_CUTOFF = date(2023, 1, 1)
 TARGET_POWER_KW = 0.8
 TARGET_PV_TYPE = "Steckerfertige Solaranlage (sog. Balkonkraftwerk)"
 USER_AGENT = "MaStR balcony trend research client/1.0"
+BRAND_KEYWORDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("Zendure", ("zendure",)),
+    ("Anker", ("anker",)),
+    ("EcoFlow", ("ecoflow",)),
+    ("Marstek", ("marstek",)),
+    ("Growatt", ("growatt",)),
+    ("Jackery", ("jackery",)),
+)
 
 F_ID = "MaStR-Nr. der Einheit"
 F_NAME = "Anzeige-Name der Einheit"
@@ -129,6 +137,49 @@ def get_value(row: Mapping[str, str], aliases: Sequence[str]) -> str:
             if value:
                 return value
     return ""
+
+
+def brand_keyword_summary(rows: Iterable[Mapping[str, str]]) -> Dict[str, object]:
+    """Count configured brand terms in the filtered storage unit name field."""
+    counts: Counter[str] = Counter()
+    total_records = 0
+    any_brand_records = 0
+    overlapping_records = 0
+    for row in rows:
+        total_records += 1
+        name = clean(row.get("name", "")) or get_value(row, ALIASES["name"])
+        normalized_name = name.casefold()
+        matched = [
+            brand
+            for brand, keywords in BRAND_KEYWORDS
+            if any(keyword.casefold() in normalized_name for keyword in keywords)
+        ]
+        for brand in matched:
+            counts[brand] += 1
+        if matched:
+            any_brand_records += 1
+        if len(matched) > 1:
+            overlapping_records += 1
+
+    return {
+        "field": "Anzeige-Name der Einheit",
+        "matching_rule": "case-insensitive substring",
+        "total_records": total_records,
+        "any_selected_brand_records": any_brand_records,
+        "other_records": total_records - any_brand_records,
+        "selected_brand_share_pct": (
+            any_brand_records / total_records * 100 if total_records else 0
+        ),
+        "multiple_keyword_records": overlapping_records,
+        "brands": [
+            {
+                "brand": brand,
+                "keywords": list(keywords),
+                "registrations": counts[brand],
+            }
+            for brand, keywords in BRAND_KEYWORDS
+        ],
+    }
 
 
 def parse_date(raw: str) -> Optional[date]:
@@ -586,6 +637,7 @@ def write_analysis(
     export_name: str,
     generated_at: str,
     stats: Mapping[str, CategoryStats],
+    brand_summary: Mapping[str, object],
     output_dir: Path,
     site_data_dir: Path,
     scanned: int,
@@ -645,6 +697,7 @@ def write_analysis(
         ("summary.json", summary),
         ("monthly.json", monthly),
         ("features.json", features),
+        ("brands.json", brand_summary),
     ):
         (site_data_dir / filename).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -653,6 +706,7 @@ def write_analysis(
         ("mastr_dashboard_summary.json", summary),
         ("mastr_dashboard_monthly.json", monthly),
         ("mastr_dashboard_features.json", features),
+        ("mastr_dashboard_brands.json", brand_summary),
     ):
         (output_dir / filename).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -754,11 +808,16 @@ def process(source_path: Path, source_url: str, output_dir: Path, site_dir: Path
                 pass
 
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    storage_csv = output_dir / "balcony_storage.csv"
+    with storage_csv.open("r", encoding="utf-8-sig", newline="") as source:
+        brand_summary = brand_keyword_summary(csv.DictReader(source))
+
     summary = write_analysis(
         source_url,
         source_path.name,
         generated_at,
         stats,
+        brand_summary,
         output_dir,
         site_data_dir,
         scanned,

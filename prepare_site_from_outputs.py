@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, Iterable
 
-from mastr_official_export import compact_record
+from mastr_official_export import brand_keyword_summary, compact_record
 
 
 FILES = {
@@ -61,6 +61,13 @@ def main() -> int:
         destination = data_dir / f"records_{category}.ndjson.gz"
         counts[category] = write_records(source, destination, category)
 
+    storage_source = expected["storage"]
+    with storage_source.open("r", encoding="utf-8-sig", newline="") as source:
+        brand_summary = brand_keyword_summary(csv.DictReader(source))
+    (data_dir / "brands.json").write_text(
+        json.dumps(brand_summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
     summary = json.loads((data_dir / "summary.json").read_text(encoding="utf-8"))
     for category, expected_count in counts.items():
         actual_count = int(summary["categories"][category]["matching_records"])
@@ -68,6 +75,8 @@ def main() -> int:
             raise RuntimeError(
                 f"{category}: restored {expected_count:,} records, expected {actual_count:,}"
             )
+    if int(brand_summary["total_records"]) != counts["storage"]:
+        raise RuntimeError("Brand summary total does not equal restored storage records")
 
     print(f"Restored dashboard data: PV {counts['pv']:,}; storage {counts['storage']:,}")
     return 0

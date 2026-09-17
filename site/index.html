@@ -48,9 +48,17 @@
       <div class="table-scroll"><table><thead><tr><th data-sort="registered">登记日期 <span>↕</span></th><th data-sort="name">名称 / 编号 <span>↕</span></th><th data-sort="state">州 <span>↕</span></th><th data-sort="district">Landkreis / 城市</th><th data-sort="power">功率</th><th>技术 / 状态</th></tr></thead><tbody id="recordBody"></tbody></table><div id="emptyState" class="empty-state hidden">没有符合当前条件的记录</div></div>
       <div class="pagination"><span id="pageLabel">第 1 页</span><div><button id="prevPage" class="icon-button" type="button" aria-label="上一页">←</button><button id="nextPage" class="icon-button" type="button" aria-label="下一页">→</button></div></div>
     </section>
+    <section id="brandPanel" class="panel brand-panel hidden">
+      <div class="panel-heading"><div><p class="panel-kicker">BRAND KEYWORD VIEW</p><h2>阳台储能品牌关键词登记</h2></div><span id="brandPanelNote" class="panel-note">名称字段关键词匹配</span></div>
+      <div class="brand-grid">
+        <div class="brand-chart-block"><div class="brand-chart-heading"><h3>主要品牌登记数</h3><span id="brandBarCaption"></span></div><div id="brandBars" class="brand-bars" role="list"></div></div>
+        <div class="brand-chart-block brand-pie-block"><div class="brand-chart-heading"><h3>六品牌合计占比</h3><span id="brandShareCaption"></span></div><div class="brand-pie-wrap"><canvas id="brandPie" tabindex="0" aria-label="六个品牌关键词登记数占阳台储能登记总数的比例"></canvas><div id="brandPieTooltip" class="brand-pie-tooltip" role="status" aria-live="polite"></div></div><div id="brandPieLegend" class="brand-pie-legend"></div></div>
+      </div>
+      <p class="brand-method">统计口径：仅在已筛选的阳台储能原表中，对 “Anzeige-Name der Einheit” 按不区分大小写的子串匹配。品牌关键词仅反映登记名称命中，不代表销量或品牌市场份额。</p>
+    </section>
     <section class="notes"><div><span class="section-kicker">口径说明</span><p id="scopeText">加载中</p></div><a href="https://www.marktstammdatenregister.de/MaStR/Einheit/Einheiten/ErweiterteOeffentlicheEinheitenuebersicht" target="_blank" rel="noreferrer">打开官方 MaStR 页面 ↗</a></section>
   </main>
   <footer class="footer">数据来源：Bundesnetzagentur / Marktstammdatenregister · 本页面不代表销量</footer>
-  <script src="app.js?v=20260917-interactive-charts"></script>
+  <script src="app.js?v=20260917-brand-keywords"></script>
 </body>
 </html>

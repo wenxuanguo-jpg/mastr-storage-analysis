@@ -1,5 +1,13 @@
 let category = "";
 let records = [];
+const BRAND_DEFINITIONS = [
+  { brand: "Zendure", keywords: ["zendure"] },
+  { brand: "Anker", keywords: ["anker"] },
+  { brand: "EcoFlow", keywords: ["ecoflow"] },
+  { brand: "Marstek", keywords: ["marstek"] },
+  { brand: "Growatt", keywords: ["growatt"] },
+  { brand: "Jackery", keywords: ["jackery"] }
+];
 
 function recordDate(raw) {
   const value = String(raw || "");
@@ -68,6 +76,33 @@ function groupedStates(rows) {
     .map(([value, count]) => ({ value, count }));
 }
 
+function brandKeywordSummary(rows) {
+  const counts = new Map(BRAND_DEFINITIONS.map((item) => [item.brand, 0]));
+  let anySelectedBrandRecords = 0;
+  let multipleKeywordRecords = 0;
+  rows.forEach((row) => {
+    const name = String(row.name || "").toLocaleLowerCase();
+    const matched = BRAND_DEFINITIONS.filter((item) => item.keywords.some((keyword) => name.includes(keyword)));
+    matched.forEach((item) => counts.set(item.brand, counts.get(item.brand) + 1));
+    if (matched.length) anySelectedBrandRecords++;
+    if (matched.length > 1) multipleKeywordRecords++;
+  });
+  return {
+    field: "Anzeige-Name der Einheit",
+    matching_rule: "case-insensitive substring",
+    total_records: rows.length,
+    any_selected_brand_records: anySelectedBrandRecords,
+    other_records: rows.length - anySelectedBrandRecords,
+    selected_brand_share_pct: rows.length ? anySelectedBrandRecords / rows.length * 100 : 0,
+    multiple_keyword_records: multipleKeywordRecords,
+    brands: BRAND_DEFINITIONS.map((item) => ({
+      brand: item.brand,
+      keywords: item.keywords,
+      registrations: counts.get(item.brand)
+    }))
+  };
+}
+
 function query(message) {
   const filtered = records.filter((row) => matches(row, message.filters));
   filtered.sort((left, right) => compareRows(left, right, message.sortKey, message.sortDirection));
@@ -82,7 +117,8 @@ function query(message) {
     page,
     rows: filtered.slice(start, start + message.pageSize),
     trend: groupedTrend(filtered, message.trendMode),
-    states: groupedStates(filtered)
+    states: groupedStates(filtered),
+    brandStats: category === "storage" ? brandKeywordSummary(filtered) : null
   });
 }
 
