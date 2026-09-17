@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MaStR Balcony Monitor</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=20260917-smooth-hover">
 </head>
 <body>
   <header class="topbar">
@@ -28,7 +28,7 @@
     </section>
     <section class="insight-band"><div class="section-kicker">自动观察</div><div id="insightText" class="insight-text">正在生成观察结果...</div></section>
     <section class="chart-grid">
-      <article class="panel trend-panel"><div class="panel-heading"><div><p class="panel-kicker">REGISTRATION PULSE</p><h2>月度登记趋势</h2></div><select id="trendMode" class="compact-select" aria-label="趋势视图"><option value="monthly">月度</option><option value="annual">年度</option></select></div><div class="chart-wrap"><canvas id="trendChart" tabindex="0" aria-label="月度登记趋势图：移动鼠标到数据点查看登记数"></canvas><div id="trendTooltip" class="trend-tooltip" role="status" aria-live="polite"></div></div><div id="trendCaption" class="chart-caption"></div></article>
+      <article class="panel trend-panel"><div class="panel-heading"><div><p class="panel-kicker">REGISTRATION PULSE</p><h2>月度登记趋势</h2></div><select id="trendMode" class="compact-select" aria-label="趋势视图"><option value="monthly">月度</option><option value="annual">年度</option></select></div><div class="chart-wrap"><canvas id="trendChart" tabindex="0" aria-label="月度登记趋势图：移动鼠标到数据点查看登记数"></canvas><div id="trendFocus" class="trend-focus" aria-hidden="true"><i></i></div><div id="trendTooltip" class="trend-tooltip" role="status" aria-live="polite"></div></div><div id="trendCaption" class="chart-caption"></div></article>
       <article class="panel distribution-panel"><div class="panel-heading"><div><p class="panel-kicker">REGIONAL MIX</p><h2>登记州分布</h2></div><span class="panel-note">Top 8</span></div><div id="stateBars" class="bars"></div></article>
     </section>
     <section class="panel feature-panel">
@@ -44,7 +44,7 @@
         <label><span>运行状态</span><select id="statusFilter"><option value="">全部状态</option></select></label>
         <label id="technologyFilterWrap"><span>技术 / 能源</span><select id="technologyFilter"><option value="">全部</option></select></label>
       </div>
-      <div class="table-meta"><span id="resultCount">正在加载明细...</span><label class="page-size">每页 <select id="pageSize"><option>25</option><option>50</option><option>100</option></select></label></div>
+      <div class="table-meta"><span id="resultCount">正在加载明细...</span><label class="page-size">每页 <select id="pageSize"><option selected>10</option><option>25</option><option>50</option><option>100</option></select></label></div>
       <div class="table-scroll"><table><thead><tr><th data-sort="registered">登记日期 <span>↕</span></th><th data-sort="name">名称 / 编号 <span>↕</span></th><th data-sort="state">州 <span>↕</span></th><th data-sort="district">Landkreis / 城市</th><th data-sort="power">功率</th><th>技术 / 状态</th></tr></thead><tbody id="recordBody"></tbody></table><div id="emptyState" class="empty-state hidden">没有符合当前条件的记录</div></div>
       <div class="pagination"><span id="pageLabel">第 1 页</span><div><button id="prevPage" class="icon-button" type="button" aria-label="上一页">←</button><button id="nextPage" class="icon-button" type="button" aria-label="下一页">→</button></div></div>
     </section>
@@ -59,6 +59,6 @@
     <section class="notes"><div><span class="section-kicker">口径说明</span><p id="scopeText">加载中</p></div><a href="https://www.marktstammdatenregister.de/MaStR/Einheit/Einheiten/ErweiterteOeffentlicheEinheitenuebersicht" target="_blank" rel="noreferrer">打开官方 MaStR 页面 ↗</a></section>
   </main>
   <footer class="footer">数据来源：Bundesnetzagentur / Marktstammdatenregister · 本页面不代表销量</footer>
-  <script src="app.js?v=20260917-brand-keywords"></script>
+  <script src="app.js?v=20260917-table10-smooth-hover"></script>
 </body>
 </html>

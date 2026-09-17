@@ -10,7 +10,7 @@ const state = {
   loadingRecords: false,
   filterOptions: null,
   page: 1,
-  pageSize: 25,
+  pageSize: 10,
   sortKey: "registered",
   sortDirection: "desc",
   pageRows: [],
@@ -132,36 +132,50 @@ function drawTrend(points) {
   ctx.fillStyle = "#1f7a62";
   points.forEach((point, index) => {
     ctx.beginPath();
-    ctx.arc(x(index), y(point.registrations), index === state.trendHoverIndex ? 5 : 3, 0, Math.PI * 2);
+    ctx.arc(x(index), y(point.registrations), 3, 0, Math.PI * 2);
     ctx.fill();
   });
-  if (state.trendHoverIndex != null) {
-    const point = points[state.trendHoverIndex];
-    ctx.beginPath();
-    ctx.arc(x(state.trendHoverIndex), y(point.registrations), 7, 0, Math.PI * 2);
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  }
   ctx.fillStyle = "#72817e";
   ctx.textAlign = "center";
   const step = Math.max(1, Math.ceil(points.length / 7));
   points.forEach((point, index) => { if (index % step === 0 || index === points.length - 1) ctx.fillText(point.month, x(index), height - 10); });
+  if (state.trendHoverIndex != null) showTrendHover(state.trendHoverIndex);
 }
 
 function clearTrendHover() {
-  const wasVisible = state.trendHoverIndex != null;
   state.trendHoverIndex = null;
   $("#trendTooltip").classList.remove("visible");
-  if (wasVisible && state.trendPoints.length) drawTrend(state.trendPoints);
+  $("#trendFocus").classList.remove("visible");
+}
+
+function showTrendHover(index) {
+  const canvas = $("#trendChart");
+  const geometry = state.trendGeometry;
+  if (!geometry || !state.trendPoints[index]) return;
+  const plotWidth = geometry.width - geometry.pad.left - geometry.pad.right;
+  const point = state.trendPoints[index];
+  const pointY = geometry.pad.top + (geometry.height - geometry.pad.top - geometry.pad.bottom) * (1 - point.registrations / geometry.max);
+  const pointX = geometry.pad.left + plotWidth * (state.trendPoints.length === 1 ? .5 : index / (state.trendPoints.length - 1));
+  const focus = $("#trendFocus");
+  focus.style.left = (canvas.offsetLeft + pointX) + "px";
+  focus.style.top = (canvas.offsetTop + geometry.pad.top) + "px";
+  focus.style.height = (geometry.height - geometry.pad.top - geometry.pad.bottom) + "px";
+  focus.style.setProperty("--point-y", (pointY - geometry.pad.top) + "px");
+  focus.classList.add("visible");
+  const tooltip = $("#trendTooltip");
+  const chartWrap = canvas.parentElement;
+  const tooltipX = Math.max(74, Math.min(chartWrap.clientWidth - 74, canvas.offsetLeft + pointX));
+  tooltip.innerHTML = "<strong>" + esc(point.month) + "</strong><span>" + count(point.registrations) + " 条登记</span>";
+  tooltip.style.left = tooltipX + "px";
+  tooltip.style.top = Math.max(30, canvas.offsetTop + pointY) + "px";
+  tooltip.classList.add("visible");
 }
 
 function updateTrendTooltip(event) {
   const canvas = $("#trendChart");
   const geometry = state.trendGeometry;
   if (!geometry || !state.trendPoints.length) return;
-  const rect = canvas.getBoundingClientRect();
-  const localX = event.clientX - rect.left;
+  const localX = event.clientX - canvas.getBoundingClientRect().left;
   const plotWidth = geometry.width - geometry.pad.left - geometry.pad.right;
   if (localX < geometry.pad.left - 12 || localX > geometry.width - geometry.pad.right + 12) {
     clearTrendHover();
@@ -169,20 +183,9 @@ function updateTrendTooltip(event) {
   }
   const index = Math.max(0, Math.min(state.trendPoints.length - 1,
     Math.round((localX - geometry.pad.left) / plotWidth * (state.trendPoints.length - 1))));
-  if (index !== state.trendHoverIndex) {
-    state.trendHoverIndex = index;
-    drawTrend(state.trendPoints);
-  }
-  const point = state.trendPoints[index];
-  const pointY = geometry.pad.top + (geometry.height - geometry.pad.top - geometry.pad.bottom) * (1 - point.registrations / geometry.max);
-  const tooltip = $("#trendTooltip");
-  const chartWrap = canvas.parentElement;
-  const tooltipX = Math.max(74, Math.min(chartWrap.clientWidth - 74, canvas.offsetLeft + geometry.pad.left + plotWidth *
-    (state.trendPoints.length === 1 ? .5 : index / (state.trendPoints.length - 1))));
-  tooltip.innerHTML = "<strong>" + esc(point.month) + "</strong><span>" + count(point.registrations) + " 条登记</span>";
-  tooltip.style.left = tooltipX + "px";
-  tooltip.style.top = Math.max(30, canvas.offsetTop + pointY) + "px";
-  tooltip.classList.add("visible");
+  if (index === state.trendHoverIndex) return;
+  state.trendHoverIndex = index;
+  showTrendHover(index);
 }
 
 function drawFeatures() {
