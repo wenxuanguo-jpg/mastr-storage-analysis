@@ -1,0 +1,56 @@
+name: Deploy existing MaStR dashboard
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: mastr-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-mastr.txt
+
+      - name: Install dashboard dependencies
+        run: python -m pip install -r requirements-mastr.txt
+
+      - name: Download successful analysis artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mastr-balcony-dashboard-analysis
+          path: restored-output
+          repository: ${{ github.repository }}
+          run-id: "35086226607"
+          github-token: ${{ github.token }}
+
+      - name: Rebuild dashboard payload
+        run: python prepare_site_from_outputs.py --outputs restored-output --site site
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy dashboard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

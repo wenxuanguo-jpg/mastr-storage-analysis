@@ -18,6 +18,8 @@ concurrency:
 
 jobs:
   analyse-and-deploy:
+    # A deploy-only recovery commit must not start another full export scan.
+    if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Deploy existing MaStR dashboard')
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
