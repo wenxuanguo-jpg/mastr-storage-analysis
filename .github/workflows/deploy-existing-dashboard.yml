@@ -1,6 +1,11 @@
 name: Deploy existing MaStR dashboard
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/deploy-existing-dashboard.yml"
   workflow_dispatch:
 
 permissions:
