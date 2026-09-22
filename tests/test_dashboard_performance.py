@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from mastr_official_export import (
     F_REGISTERED,
     OutputWriters,
     dashboard_performance,
+    iter_members,
 )
 from prepare_site_from_outputs import main as rebuild_site
 
@@ -109,6 +111,34 @@ class DashboardPerformanceTests(unittest.TestCase):
             with (root / "outputs" / "balcony_storage.csv").open("r", encoding="utf-8-sig", newline="") as stream:
                 restored = list(csv.DictReader(stream))
             self.assertEqual(restored[0][F_CAPACITY], "2,0")
+
+    def test_storage_capacity_is_joined_from_storage_plant_xml(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive_path = Path(temporary) / "export.zip"
+            unit_xml = """<?xml version="1.0" encoding="utf-8"?>
+<EinheitenStromSpeicher><EinheitStromSpeicher>
+  <EinheitMastrNummer>SEE123</EinheitMastrNummer>
+  <Registrierungsdatum>2026-08-10</Registrierungsdatum>
+  <NameStromerzeugungseinheit>Test storage</NameStromerzeugungseinheit>
+  <Energietraeger>2493</Energietraeger>
+  <Nettonennleistung>0.8</Nettonennleistung>
+  <SpeMastrNummer>SEI456</SpeMastrNummer>
+</EinheitStromSpeicher></EinheitenStromSpeicher>"""
+            plant_xml = """<?xml version="1.0" encoding="utf-8"?>
+<AnlagenStromSpeicher><AnlageStromSpeicher>
+  <MaStRNummer>SEI456</MaStRNummer>
+  <NutzbareSpeicherkapazitaet>1.6</NutzbareSpeicherkapazitaet>
+  <VerknuepfteEinheitenMaStRNummern>SEE123</VerknuepfteEinheitenMaStRNummern>
+</AnlageStromSpeicher></AnlagenStromSpeicher>"""
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("EinheitenStromSpeicher.xml", unit_xml)
+                archive.writestr("AnlagenStromSpeicher.xml", plant_xml)
+
+            rows = []
+            for _name, member_rows in iter_members(archive_path):
+                rows.extend(row for row, _line in member_rows)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][F_CAPACITY], "1.6")
 
 
 if __name__ == "__main__":

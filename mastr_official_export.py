@@ -489,6 +489,29 @@ def xml_member_names(archive: zipfile.ZipFile) -> List[str]:
     )
 
 
+def storage_plant_xml_member_names(archive: zipfile.ZipFile) -> List[str]:
+    """Return the XML members that contain storage Anlage records.
+
+    The usable capacity is an Anlage-level field in
+    ``AnlagenStromSpeicher.xml``.  The corresponding unit record only carries
+    the ``SpeMastrNummer`` reference, so the two files must be joined before
+    filtering and calculating the dashboard metric.
+    """
+    return sorted(
+        item for item in archive.namelist()
+        if item.lower().endswith(".xml")
+        and "anlagenstromspeicher" in Path(item).name.lower()
+    )
+
+
+def split_mastr_references(raw: str) -> Iterator[str]:
+    """Split the export's possibly multi-valued MaStR reference field."""
+    for value in re.split(r"[,;|]", clean(raw)):
+        value = clean(value)
+        if value:
+            yield value
+
+
 def source_csv_rows(handle: io.BufferedIOBase) -> Iterator[Tuple[Dict[str, str], int]]:
     text = io.TextIOWrapper(handle, encoding="utf-8-sig", errors="replace", newline="")
     header = text.readline()
@@ -547,7 +570,12 @@ def xml_catalog_value(raw: str, catalog: Mapping[str, str]) -> str:
     return catalog.get(value, value)
 
 
-def normalize_xml_row(row: Mapping[str, str], catalog: Mapping[str, str]) -> Dict[str, str]:
+def normalize_xml_row(
+    row: Mapping[str, str],
+    catalog: Mapping[str, str],
+    storage_capacity_by_plant: Optional[Mapping[str, str]] = None,
+    storage_capacity_by_unit: Optional[Mapping[str, str]] = None,
+) -> Dict[str, str]:
     """Add the public-table field names and resolve official catalog IDs."""
     normalized = dict(row)
 
@@ -575,6 +603,16 @@ def normalize_xml_row(row: Mapping[str, str], catalog: Mapping[str, str]) -> Dic
     copy_field(F_BUILDING_USE, "Nutzungsbereich", resolve=True)
     copy_field(F_STORAGE_TECH, "Batterietechnologie", resolve=True)
     copy_field(F_CAPACITY, "NutzbareSpeicherkapazitaet")
+    if not clean(normalized.get(F_CAPACITY, "")):
+        plant_id = clean(row.get("SpeMastrNummer", ""))
+        unit_id = clean(row.get("EinheitMastrNummer", ""))
+        capacity = ""
+        if storage_capacity_by_plant and plant_id:
+            capacity = clean(storage_capacity_by_plant.get(plant_id, ""))
+        if not capacity and storage_capacity_by_unit and unit_id:
+            capacity = clean(storage_capacity_by_unit.get(unit_id, ""))
+        if capacity:
+            normalized[F_CAPACITY] = capacity
     copy_field(F_COUPLING, "AcDcKoppelung", resolve=True)
     return normalized
 
@@ -761,6 +799,24 @@ def iter_members(source_path: Path) -> Iterator[Tuple[str, Iterable[Tuple[Dict[s
                 if item_id and item_value:
                     catalog[item_id] = item_value
 
+    storage_capacity_by_plant: Dict[str, str] = {}
+    storage_capacity_by_unit: Dict[str, str] = {}
+    for name in storage_plant_xml_member_names(archive):
+        with archive.open(name) as handle:
+            for row, _line_number in source_xml_rows(
+                handle, row_names=("AnlageStromSpeicher",)
+            ):
+                capacity = clean(row.get("NutzbareSpeicherkapazitaet", ""))
+                plant_id = clean(row.get("MaStRNummer", ""))
+                if not capacity:
+                    continue
+                if plant_id:
+                    storage_capacity_by_plant[plant_id] = capacity
+                for unit_id in split_mastr_references(
+                    row.get("VerknuepfteEinheitenMaStRNummern", "")
+                ):
+                    storage_capacity_by_unit[unit_id] = capacity
+
     names = xml_member_names(archive)
     if not names:
         archive.close()
@@ -769,7 +825,12 @@ def iter_members(source_path: Path) -> Iterator[Tuple[str, Iterable[Tuple[Dict[s
         def normalized_rows(member_name: str = name) -> Iterator[Tuple[Dict[str, str], int]]:
             with archive.open(member_name) as handle:
                 for row, line_number in source_xml_rows(handle):
-                    yield normalize_xml_row(row, catalog), line_number
+                    yield normalize_xml_row(
+                        row,
+                        catalog,
+                        storage_capacity_by_plant,
+                        storage_capacity_by_unit,
+                    ), line_number
 
         yield name, normalized_rows()
     archive.close()
