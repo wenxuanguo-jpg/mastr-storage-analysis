@@ -19,8 +19,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  select-analysis-run:
+    # Find the latest successful full analysis rather than tying the dashboard
+    # to a short-lived, hard-coded artifact run ID.
+    runs-on: ubuntu-latest
+    outputs:
+      run-id: ${{ steps.analysis.outputs.run-id }}
+    steps:
+      - name: Find latest successful full analysis
+        id: analysis
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const response = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "mastr-storage-analysis.yml",
+              branch: "main",
+              status: "completed",
+              per_page: 100,
+            });
+            const run = response.data.workflow_runs.find(
+              (item) => item.conclusion === "success",
+            );
+            if (!run) {
+              core.setFailed("No successful full MaStR analysis artifact is available.");
+              return;
+            }
+            core.setOutput("run-id", String(run.id));
+            core.info(`Using analysis artifact from run ${run.id}.`);
+
   deploy:
     # This lightweight workflow republishes the latest frontend with a completed analysis artifact.
+    needs: select-analysis-run
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -43,7 +74,7 @@ jobs:
           name: mastr-balcony-dashboard-analysis
           path: restored-output
           repository: ${{ github.repository }}
-          run-id: "35086226607"
+          run-id: ${{ needs.select-analysis-run.outputs.run-id }}
           github-token: ${{ github.token }}
 
       - name: Rebuild dashboard payload
