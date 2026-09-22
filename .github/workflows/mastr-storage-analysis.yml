@@ -2,6 +2,8 @@ name: MaStR balcony dashboard
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
     # GitHub Actions uses UTC: every Monday at 05:30 UTC (13:30 Asia/Shanghai).
     - cron: "30 5 * * 1"
