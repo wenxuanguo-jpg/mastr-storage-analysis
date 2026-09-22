@@ -56,6 +56,9 @@ jobs:
               assert item["matching_records"] == item["unique_unit_ids"]
           assert summary["validation"]["monthly_totals_equal_counts"]
           assert summary["validation"]["unique_ids_equal_counts"]
+          performance = json.loads(Path("outputs/mastr_dashboard_performance.json").read_text(encoding="utf-8"))
+          capacity_months = performance["categories"]["storage"]["metrics"]["capacity"]["monthly"]
+          assert capacity_months, "storage: no usable-capacity observations were joined from Anlage records"
           PY
 
       - name: Upload full filtered data and analysis
