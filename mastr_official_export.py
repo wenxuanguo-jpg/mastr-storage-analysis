@@ -48,6 +48,8 @@ PUBLIC_SOURCE_PAGE = (
 DATE_CUTOFF = date(2023, 1, 1)
 TARGET_POWER_KW = 0.8
 TARGET_PV_TYPE = "Steckerfertige Solaranlage (sog. Balkonkraftwerk)"
+CAPACITY_OUTLIER_KWH = 100.0
+MIN_CAPACITY_TREND_OBSERVATIONS = 30
 USER_AGENT = "MaStR balcony trend research client/1.0"
 BRAND_KEYWORDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("Zendure", ("zendure",)),
@@ -300,6 +302,7 @@ def _average_series(
                 "period": period,
                 "average": round(average, 6),
                 "observations": int(buckets[period][1]),
+                "excluded_observations": int(buckets[period][2]) if len(buckets[period]) > 2 else 0,
                 "previous_year_average": round(previous, 6) if previous is not None else None,
                 "yoy_pct": round(_percentage_change(average, previous), 4)
                 if previous is not None
@@ -328,7 +331,7 @@ def dashboard_performance(
         monthly_registrations: Counter[str] = Counter()
         quarterly_registrations: Counter[str] = Counter()
         monthly_metrics = {
-            key: defaultdict(lambda: [0.0, 0.0])
+            key: defaultdict(lambda: [0.0, 0.0, 0.0])
             for key, _label, _unit, _aliases in metric_definitions
         }
         for row in rows_by_category.get(category, ()):
@@ -344,6 +347,13 @@ def dashboard_performance(
                 if value is None:
                     continue
                 bucket = monthly_metrics[key][month]
+                if (
+                    category == "storage"
+                    and key == "capacity"
+                    and value >= CAPACITY_OUTLIER_KWH
+                ):
+                    bucket[2] += 1
+                    continue
                 bucket[0] += value
                 bucket[1] += 1
 
@@ -354,19 +364,30 @@ def dashboard_performance(
                 for month, values in monthly_metrics[key].items()
                 if month <= complete_month
             }
-            annual_buckets: Dict[str, List[float]] = defaultdict(lambda: [0.0, 0.0])
+            annual_buckets: Dict[str, List[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
             for month, values in month_buckets.items():
                 if int(month[-2:]) > cutoff_month_number:
                     continue
                 annual = annual_buckets[month[:4]]
                 annual[0] += values[0]
                 annual[1] += values[1]
-            metrics[key] = {
+                annual[2] += values[2]
+            metric: Dict[str, object] = {
                 "label": label,
                 "unit": unit,
                 "monthly": _average_series(month_buckets),
                 "annual": _average_series(annual_buckets),
             }
+            if category == "storage" and key == "capacity":
+                metric["data_quality"] = {
+                    "outlier_rule": "exclude raw values greater than or equal to 100 kWh",
+                    "outlier_threshold_kwh": CAPACITY_OUTLIER_KWH,
+                    "minimum_observations_for_monthly_chart": MIN_CAPACITY_TREND_OBSERVATIONS,
+                    "excluded_observations": int(
+                        sum(values[2] for values in month_buckets.values())
+                    ),
+                }
+            metrics[key] = metric
 
         categories[category] = {
             "registration_yoy": {

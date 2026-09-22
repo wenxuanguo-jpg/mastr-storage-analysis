@@ -228,18 +228,30 @@ function renderRegistrationYoy() {
   $("#registrationYoyNote").textContent = "月度 " + formatPeriod(registration.month.period) + " · 季度 " + formatPeriod(registration.quarter.period);
 }
 
-function metricTrendHtml(key, metric, mode) {
-  const latest = (metric[mode] || []).at(-1);
-  const caption = latest
-    ? formatPeriod(latest.period) + " " + metricValue(latest.average, metric.unit) + " · " + yoyText(latest.yoy_pct)
-    : "暂无可用数值字段";
-  return '<article class="equipment-trend-item"><h3>' + esc(metric.label) + '</h3><p>' + esc(mode === "annual" ? "同月累计口径的年度平均" : "按完整登记月计算的平均值") + '</p><div class="metric-chart-wrap"><canvas id="metricChart-' + esc(key) + '" class="metric-chart" tabindex="0" aria-label="' + esc(metric.label) + '趋势图"></canvas><div id="metricTooltip-' + esc(key) + '" class="metric-chart-tooltip" role="status" aria-live="polite"></div></div><p class="metric-chart-caption">' + esc(caption) + "</p></article>";
+function visibleMetricPoints(metric, mode) {
+  const points = metric[mode] || [];
+  const minimum = Number(metric.data_quality && metric.data_quality.minimum_observations_for_monthly_chart || 1);
+  return mode === "monthly" ? points.filter((item) => Number(item.observations) >= minimum) : points;
+}
+
+function metricTrendHtml(key, metric) {
+  const chart = (mode, label, description) => {
+    const latest = visibleMetricPoints(metric, mode).at(-1);
+    const caption = latest
+      ? formatPeriod(latest.period) + " " + metricValue(latest.average, metric.unit) + " · " + yoyText(latest.yoy_pct)
+      : "暂无可用数值字段";
+    return '<section class="metric-chart-section"><div class="metric-chart-heading"><h4>' + esc(label) + '</h4><span>' + esc(description) + '</span></div><div class="metric-chart-wrap"><canvas id="metricChart-' + esc(key) + '-' + mode + '" class="metric-chart" tabindex="0" aria-label="' + esc(metric.label) + esc(label) + '趋势图"></canvas><div id="metricTooltip-' + esc(key) + '-' + mode + '" class="metric-chart-tooltip" role="status" aria-live="polite"></div></div><p class="metric-chart-caption">' + esc(caption) + '</p></section>';
+  };
+  return '<article class="equipment-trend-item"><h3>' + esc(metric.label) + '</h3><p>官方 MaStR 筛选记录的算术平均值</p><div class="metric-chart-comparison">' +
+    chart("monthly", "月度平均", "每个完整登记月") +
+    chart("annual", "年度平均", "同月累计口径") +
+    "</div></article>";
 }
 
 function drawMetricTrend(key, metric, mode) {
-  const points = metric[mode] || [];
-  const canvas = $("#metricChart-" + key);
-  const tooltip = $("#metricTooltip-" + key);
+  const points = visibleMetricPoints(metric, mode);
+  const canvas = $("#metricChart-" + key + "-" + mode);
+  const tooltip = $("#metricTooltip-" + key + "-" + mode);
   if (!canvas || !tooltip) return;
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
@@ -302,7 +314,9 @@ function drawMetricTrend(key, metric, mode) {
     const index = Math.max(0, Math.min(points.length - 1, Math.round((localX - pad.left) / plotWidth * (points.length - 1))));
     const point = points[index];
     const tooltipX = Math.max(78, Math.min(canvas.parentElement.clientWidth - 78, canvas.offsetLeft + x(index)));
-    tooltip.innerHTML = "<strong>" + esc(formatPeriod(point.period)) + "</strong><span>平均 " + esc(metricValue(point.average, metric.unit)) + "</span><span>" + esc(yoyText(point.yoy_pct)) + " · 有效 " + count(point.observations) + " 条</span>";
+    const excluded = Number(point.excluded_observations || 0);
+    const exclusionNote = excluded ? " · 已排除 " + count(excluded) + " 条异常原始值" : "";
+    tooltip.innerHTML = "<strong>" + esc(formatPeriod(point.period)) + "</strong><span>平均 " + esc(metricValue(point.average, metric.unit)) + "</span><span>" + esc(yoyText(point.yoy_pct)) + " · 有效 " + count(point.observations) + " 条" + esc(exclusionNote) + "</span>";
     tooltip.style.left = tooltipX + "px";
     tooltip.style.top = Math.max(28, canvas.offsetTop + y(point.average)) + "px";
     tooltip.classList.add("visible");
@@ -320,15 +334,19 @@ function renderEquipmentTrends() {
     return;
   }
   panel.classList.remove("hidden");
-  const mode = $("#equipmentTrendMode").value;
   const metrics = categoryPerformance.metrics;
   $("#equipmentTrendTitle").textContent = state.category === "pv" ? "平均设备规模趋势" : "平均电池容量趋势";
-  $("#equipmentTrendGrid").innerHTML = Object.entries(metrics).map(([key, metric]) => metricTrendHtml(key, metric, mode)).join("");
+  $("#equipmentTrendGrid").innerHTML = Object.entries(metrics).map(([key, metric]) => metricTrendHtml(key, metric)).join("");
   const cutoff = state.performance.annual_comparable_through_month;
-  $("#equipmentTrendMethod").textContent = mode === "annual"
-    ? "年度平均按每个年份 1 至 " + cutoff + " 月的有效登记计算，并与上一年同月累计均值比较。"
-    : "月度平均仅显示已结束的完整登记月；鼠标悬停可查看有效样本数及去年同月平均值的同比变化。";
-  Object.entries(metrics).forEach(([key, metric]) => drawMetricTrend(key, metric, mode));
+  const quality = state.category === "storage" && metrics.capacity && metrics.capacity.data_quality;
+  const qualityNote = quality
+    ? "容量均值已排除原始值 ≥ " + quality.outlier_threshold_kwh + " kWh 的疑似单位错填记录；月度样本少于 " + quality.minimum_observations_for_monthly_chart + " 条时不绘图。原始值仍保留在可下载明细中。"
+    : "";
+  $("#equipmentTrendMethod").textContent = "月度平均仅显示已结束的完整登记月；年度平均按每个年份 1 至 " + cutoff + " 月的有效登记计算，并与上一年同月累计均值比较。" + qualityNote;
+  Object.entries(metrics).forEach(([key, metric]) => {
+    drawMetricTrend(key, metric, "monthly");
+    drawMetricTrend(key, metric, "annual");
+  });
 }
 
 function drawFeatures() {
@@ -644,7 +662,6 @@ $("#brandPie").addEventListener("pointermove", updateBrandPieTooltip);
 $("#brandPie").addEventListener("pointerleave", clearBrandPieTooltip);
 $("#brandPie").addEventListener("blur", clearBrandPieTooltip);
 $("#trendMode").addEventListener("change", () => state.recordsLoaded ? queryRecords() : updateMetrics());
-$("#equipmentTrendMode").addEventListener("change", renderEquipmentTrends);
 $("#pageSize").addEventListener("change", (event) => { state.pageSize = Number(event.target.value); state.page = 1; queryRecords(); });
 $("#prevPage").addEventListener("click", () => { state.page--; queryRecords(); });
 $("#nextPage").addEventListener("click", () => { state.page++; queryRecords(); });

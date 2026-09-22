@@ -112,6 +112,25 @@ class DashboardPerformanceTests(unittest.TestCase):
                 restored = list(csv.DictReader(stream))
             self.assertEqual(restored[0][F_CAPACITY], "2,0")
 
+    def test_storage_capacity_excludes_suspected_unit_scale_outliers(self):
+        result = dashboard_performance(
+            {
+                "pv": [],
+                "storage": [
+                    row("2026-08-10", capacity="2,0"),
+                    row("2026-08-11", capacity="4,0"),
+                    row("2026-08-12", capacity="5376,0"),
+                ],
+            },
+            as_of=__import__("datetime").date(2026, 9, 17),
+        )
+        capacity = result["categories"]["storage"]["metrics"]["capacity"]
+        august = next(item for item in capacity["monthly"] if item["period"] == "2026-08")
+        self.assertEqual(august["average"], 3.0)
+        self.assertEqual(august["observations"], 2)
+        self.assertEqual(august["excluded_observations"], 1)
+        self.assertEqual(capacity["data_quality"]["outlier_threshold_kwh"], 100.0)
+
     def test_storage_capacity_is_joined_from_storage_plant_xml(self):
         with tempfile.TemporaryDirectory() as temporary:
             archive_path = Path(temporary) / "export.zip"
