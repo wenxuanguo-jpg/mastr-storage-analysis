@@ -39,6 +39,9 @@ jobs:
       - name: Install analysis dependencies
         run: python -m pip install -r requirements-mastr.txt
 
+      - name: Test analysis and filtering
+        run: python -m unittest discover -s tests
+
       - name: Build filtered datasets and dashboard data
         run: python mastr_official_export.py
 
@@ -49,7 +52,7 @@ jobs:
           import json
           from pathlib import Path
           summary = json.loads(Path("outputs/mastr_dashboard_summary.json").read_text(encoding="utf-8"))
-          for key in ("pv", "storage"):
+          for key in ("pv", "storage", "household_pv", "household_storage"):
               item = summary["categories"][key]
               print(f"{key}: {item['matching_records']:,} records")
               assert item["matching_records"] > 0, f"{key}: parser returned zero records"
@@ -59,6 +62,9 @@ jobs:
           performance = json.loads(Path("outputs/mastr_dashboard_performance.json").read_text(encoding="utf-8"))
           capacity_months = performance["categories"]["storage"]["metrics"]["capacity"]["monthly"]
           assert capacity_months, "storage: no usable-capacity observations were joined from Anlage records"
+          for key, metrics in (("household_pv", ("power",)), ("household_storage", ("power", "capacity"))):
+              for metric in metrics:
+                  assert performance["categories"][key]["metrics"][metric]["monthly"], f"{key}: missing {metric} observations"
           PY
 
       - name: Upload full filtered data and analysis
@@ -68,6 +74,8 @@ jobs:
           path: |
             outputs/balcony_pv.csv
             outputs/balcony_storage.csv
+            outputs/household_pv.csv
+            outputs/household_storage.csv
             outputs/mastr_dashboard_summary.json
             outputs/mastr_dashboard_monthly.json
             outputs/mastr_dashboard_features.json
