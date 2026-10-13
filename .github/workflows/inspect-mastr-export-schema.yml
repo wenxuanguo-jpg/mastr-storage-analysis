@@ -1,0 +1,30 @@
+name: Inspect official MaStR export schema
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect-schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download official documentation to cloud runner
+        run: |
+          mkdir -p "$RUNNER_TEMP/mastr-schema"
+          curl --fail --location --retry 3 'https://www.marktstammdatenregister.de/MaStRHilfe/files/gesamtdatenexport/Dokumentation%20MaStR%20Gesamtdatenexport.zip' --output "$RUNNER_TEMP/mastr-schema/documentation.zip"
+          unzip -q "$RUNNER_TEMP/mastr-schema/documentation.zip" -d "$RUNNER_TEMP/mastr-schema/documentation"
+      - name: Show voltage and location field definitions
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y poppler-utils
+          find "$RUNNER_TEMP/mastr-schema/documentation" -type f -name '*.pdf' -exec pdftotext -layout {} {}.txt \;
+          find "$RUNNER_TEMP/mastr-schema/documentation" -type f
+          grep -R -n -I -E -C 5 'Spannungsebene|LokationMa|LokationMastr|Netzanschlusspunkt|Haushalt|Gebaeudesolaranlage' "$RUNNER_TEMP/mastr-schema/documentation" | tee "$RUNNER_TEMP/mastr-schema/schema-report.txt"
+      - name: Keep documentation and report in GitHub
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mastr-official-schema
+          path: ${{ runner.temp }}/mastr-schema
+          retention-days: 7
+          if-no-files-found: error
