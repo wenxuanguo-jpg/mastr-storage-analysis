@@ -17,7 +17,7 @@ function recordDate(raw) {
   return match ? match[3] + "-" + String(match[2]).padStart(2, "0") + "-" + String(match[1]).padStart(2, "0") : value;
 }
 
-function technologyKey() { return category === "pv" ? "solarTech" : "storageTech"; }
+function technologyKey() { return category === "pv" || category === "household_pv" ? "solarTech" : "storageTech"; }
 
 function matches(row, filters) {
   const search = String(filters.search || "").toLocaleLowerCase();
@@ -158,13 +158,13 @@ function download(message) {
   const headers = ["登记日期", "MaStR编号", "名称", "州", "Landkreis", "Gemeinde", "Ort", "功率", "技术/能源", "运行状态"];
   const rows = [headers].concat(filtered.map((row) => [
     row.registered, row.id, row.name, row.state, row.district, row.municipality, row.town, row.power,
-    category === "pv" ? row.solarTech : row.storageTech, row.status
+    row[technologyKey()], row.status
   ]));
   const csv = rows.map((line) => line.map((value) => '"' + String(value || "").replace(/"/g, '""') + '"').join(",")).join("\n");
   postMessage({
     type: "download",
     category,
-    filename: "mastr_" + (category === "pv" ? "balcony_pv" : "balcony_storage") + "_filtered.csv",
+    filename: "mastr_" + ({ pv: "balcony_pv", storage: "balcony_storage" }[category] || category) + "_filtered.csv",
     blob: new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" })
   });
 }

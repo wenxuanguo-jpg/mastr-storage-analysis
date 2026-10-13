@@ -36,6 +36,7 @@ const esc = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c
 
 function setStatus(text) { $("#dataStatus").textContent = text; }
 function categoryInfo() { return state.summary.categories[state.category]; }
+function isPv() { return state.category === "pv" || state.category === "household_pv"; }
 
 function recordDate(raw) {
   const value = String(raw || "");
@@ -96,7 +97,7 @@ function populateFilters() {
   fillSelect($("#districtFilter"), state.filterOptions.district, "全部地区");
   fillSelect($("#statusFilter"), state.filterOptions.status, "全部状态");
   fillSelect($("#technologyFilter"), state.filterOptions.technology, "全部");
-  $("#technologyFilterWrap span").textContent = state.category === "pv" ? "发电技术" : "电池技术";
+  $("#technologyFilterWrap span").textContent = isPv() ? "发电技术" : "电池技术";
 }
 
 function setFilterControls(enabled) {
@@ -185,7 +186,21 @@ function showTrendHover(index) {
   const tooltip = $("#trendTooltip");
   const chartWrap = canvas.parentElement;
   const tooltipX = Math.max(74, Math.min(chartWrap.clientWidth - 74, canvas.offsetLeft + pointX));
-  tooltip.innerHTML = "<strong>" + esc(point.month) + "</strong><span>" + count(point.registrations) + " 条登记</span>";
+  const monthly = point.month.length === 7;
+  const priorYear = String(Number(point.month.slice(0, 4)) - 1) + point.month.slice(4);
+  const previous = state.trendPoints.find((item) => item.month === priorYear);
+  const partialYear = !monthly && point.month === state.performance.as_of_date.slice(0, 4);
+  const yoy = partialYear ? "当年未结束；同期同比见年度累计"
+    : previous && previous.registrations > 0
+    ? "同比 " + percent((point.registrations / previous.registrations - 1) * 100) : "同比暂无可比数据";
+  let mom = "";
+  if (monthly && index > 0) {
+    const previousMonth = new Date(Number(point.month.slice(0, 4)), Number(point.month.slice(5)) - 2, 1);
+    const expected = previousMonth.getFullYear() + "-" + String(previousMonth.getMonth() + 1).padStart(2, "0");
+    const prior = state.trendPoints[index - 1];
+    if (prior.month === expected && prior.registrations > 0) mom = " · 环比 " + percent((point.registrations / prior.registrations - 1) * 100);
+  }
+  tooltip.innerHTML = "<strong>" + esc(point.month) + "</strong><span>" + count(point.registrations) + " 条登记</span><span>" + esc(yoy + mom) + "</span>";
   tooltip.style.left = tooltipX + "px";
   tooltip.style.top = Math.max(30, canvas.offsetTop + pointY) + "px";
   tooltip.classList.add("visible");
@@ -224,8 +239,8 @@ function renderRegistrationYoy() {
     return '<article class="registration-yoy-item"><span>' + esc(label) + " · " + esc(formatPeriod(item.period)) + '</span><strong>' + count(item.registrations) + " 条</strong><small>对比 " + esc(formatPeriod(item.comparison_period)) + " · " + count(item.comparison_registrations) + " 条 · " + change + " 条</small>" +
       '<div class="registration-yoy-change ' + esc(direction) + '"><i></i>' + esc(verb) + " · " + esc(yoyText(item.yoy_pct)) + "</div></article>";
   };
-  $("#registrationYoyCards").innerHTML = card("最近完整月", registration.month) + card("最近完整季度", registration.quarter);
-  $("#registrationYoyNote").textContent = "月度 " + formatPeriod(registration.month.period) + " · 季度 " + formatPeriod(registration.quarter.period);
+  $("#registrationYoyCards").innerHTML = card("最近完整月", registration.month) + card("最近完整季度", registration.quarter) + (registration.annual ? card("年度同期累计", registration.annual) : "");
+  $("#registrationYoyNote").textContent = "完整月 / 季度；年度为 1 至 " + state.performance.annual_comparable_through_month + " 月同期累计";
 }
 
 function visibleMetricPoints(metric, mode) {
@@ -331,7 +346,7 @@ function renderEquipmentTrends() {
   panel.classList.remove("hidden");
   const mode = $("#equipmentTrendMode").value;
   const metrics = categoryPerformance.metrics;
-  $("#equipmentTrendTitle").textContent = state.category === "pv" ? "平均设备规模趋势" : "平均电池容量趋势";
+  $("#equipmentTrendTitle").textContent = isPv() ? "平均设备规模趋势" : "平均功率与容量趋势";
   $("#equipmentTrendGrid").innerHTML = Object.entries(metrics).map(([key, metric]) => metricTrendHtml(key, metric, mode)).join("");
   const cutoff = state.performance.annual_comparable_through_month;
   const quality = state.category === "storage" && metrics.capacity && metrics.capacity.data_quality;
@@ -346,7 +361,9 @@ function renderEquipmentTrends() {
 
 function drawFeatures() {
   const source = state.features[state.category] || {};
-  const labels = state.category === "pv"
+  const labels = state.category === "household_pv"
+    ? { solar_tech: "发电技术", status: "运行状态", state: "登记州" }
+    : isPv()
     ? { solar_tech: "发电技术", storage_tech: "储能技术", name: "名称关键词", status: "运行状态" }
     : { storage_tech: "电池技术", capacity: "可用容量", status: "运行状态", state: "登记州" };
   $("#featureGrid").innerHTML = Object.entries(labels).map(([key, label]) => {
@@ -482,13 +499,18 @@ function updateMetrics() {
   $("#insightText").innerHTML = (state.summary.insights[state.category] || []).map((item) =>
     esc(item).replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
   ).join(" ");
-  $("#scopeText").textContent = state.category === "pv"
-    ? "阳台光伏 = 登记日期 > 2023-01-01 且 Art der Solaranlage 精确等于 Steckerfertige Solaranlage (sog. Balkonkraftwerk)。"
-    : "阳台储能 = 登记日期 > 2023-01-01、Nettonennleistung der Einheit = 0.8 kW、Energieträger = Speicher。官方 CSV 的 0,8 已按数值 0.8 处理。";
+  $("#metricRangeNote").textContent = state.category.startsWith("household_") ? "全部登记日期" : "严格晚于 2023-01-01";
+  const scopes = {
+    pv: "阳台光伏 = 登记日期 > 2023-01-01 且 Art der Solaranlage 精确等于 Steckerfertige Solaranlage (sog. Balkonkraftwerk)。",
+    storage: "阳台储能 = 登记日期 > 2023-01-01、Nettonennleistung der Einheit = 0.8 kW、Energieträger = Speicher。",
+    household_pv: "户用光伏 = Art der Solaranlage 为 Gebäudesolaranlage，Nutzungsbereich des Gebäudes mit Solaranlage 为 Haushalt。覆盖全部登记日期与运行状态。",
+    household_storage: "户用储能 = Energieträger 为 Speicher、Spannungsebene 为 Niederspannung (= Hausanschluss/Haushaltsstrom)、Nettonennleistung der Einheit 不等于 0.8 kW。覆盖全部登记日期与运行状态。"
+  };
+  $("#scopeText").textContent = scopes[state.category];
   renderRegistrationYoy();
   renderEquipmentTrends();
   if (!state.recordsLoaded) {
-    drawTrend(points);
+    drawTrend($("#trendMode").value === "annual" ? info.annual.map((item) => ({ month: item.year, registrations: item.registrations })) : points);
     drawStateBars((state.features[state.category].state || []).slice(0, 8));
     drawFeatures();
   }
@@ -508,7 +530,7 @@ function renderTable() {
     return;
   }
   body.innerHTML = state.pageRows.map((row) => {
-    const tech = state.category === "pv" ? row.solarTech : row.storageTech;
+    const tech = isPv() ? row.solarTech : row.storageTech;
     return "<tr><td>" + esc(formatDate(row.registered)) + "</td>" +
       '<td><strong title="' + esc(row.name) + '">' + esc(row.name || "未提供名称") + "</strong><small>" + esc(row.id) + "</small></td>" +
       "<td>" + esc(row.state || "--") + "</td><td>" + esc(row.district || "--") + "<small>" + esc(row.town || row.municipality || "") + "</small></td>" +
@@ -581,7 +603,7 @@ function loadCategoryRecords() {
   $("#loadRecordsButton").disabled = true;
   $("#loadRecordsButton").textContent = "正在加载明细";
   renderTable();
-  state.worker = new Worker("records-worker.js");
+  state.worker = new Worker("records-worker.js?v=20261013-household");
   state.worker.addEventListener("message", handleWorkerMessage);
   state.worker.addEventListener("error", (event) => handleWorkerMessage({ data: { type: "error", category: state.category, error: event.message || "Worker unavailable" } }));
   state.worker.postMessage({ type: "load", category: state.category, path: "data/records_" + state.category + ".ndjson.gz" });
@@ -601,7 +623,7 @@ function resetRecordView() {
   ["#searchInput", "#stateFilter", "#districtFilter", "#statusFilter", "#technologyFilter"].forEach((selector) => { $(selector).value = ""; });
   setFilterControls(false);
   $("#loadRecordsButton").disabled = false;
-  $("#loadRecordsButton").textContent = "加载" + (state.category === "pv" ? "阳台光伏" : "阳台储能") + "明细";
+  $("#loadRecordsButton").textContent = "加载" + categoryInfo().label + "明细";
 }
 
 function switchCategory(category) {
@@ -635,8 +657,11 @@ async function init() {
     state.performance = performance;
     $("#exportName").textContent = state.summary.source_export;
     $("#generatedAt").textContent = "生成于 " + state.summary.generated_at_utc;
-    $("#pvSwitchCount").textContent = count(state.summary.categories.pv.matching_records) + " 条";
-    $("#storageSwitchCount").textContent = count(state.summary.categories.storage.matching_records) + " 条";
+    document.querySelectorAll(".category-button").forEach((button) => {
+      const info = state.summary.categories[button.dataset.category];
+      button.disabled = !info;
+      $("#" + button.dataset.category + "SwitchCount").textContent = info ? count(info.matching_records) + " 条" : "等待首次数据更新";
+    });
     resetRecordView();
     updateMetrics();
     renderTable();

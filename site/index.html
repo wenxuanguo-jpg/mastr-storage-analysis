@@ -3,26 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MaStR Balcony Monitor</title>
-  <link rel="stylesheet" href="styles.css?v=20260922-separate-device-trends">
+  <title>MaStR Energy Monitor</title>
+  <link rel="stylesheet" href="styles.css?v=20261013-household">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="brand-mark">M</span><div><strong>MaStR Balcony Monitor</strong><span>德国阳台能源登记观察</span></div></div>
+    <div class="brand"><span class="brand-mark">M</span><div><strong>MaStR Energy Monitor</strong><span>德国阳台与户用能源登记观察</span></div></div>
     <div class="source-status"><span class="status-dot"></span><span id="dataStatus">正在读取数据</span></div>
   </header>
   <main class="shell">
     <section class="intro">
-      <div><p class="eyebrow">OFFICIAL REGISTRY VIEW</p><h1>阳台光伏与阳台储能</h1><p class="lede">按官方 MaStR 全量导出包追踪登记节奏、区域分布与设备特征。</p></div>
+      <div><p class="eyebrow">OFFICIAL REGISTRY VIEW</p><h1>阳台与户用光伏储能</h1><p class="lede">按官方 MaStR 全量导出包追踪登记节奏、区域分布与设备特征。</p></div>
       <div class="data-meta"><span>数据包</span><strong id="exportName">加载中</strong><span id="generatedAt">生成时间加载中</span></div>
     </section>
     <section class="category-switch" aria-label="品类选择">
       <button class="category-button active" data-category="pv"><span class="category-icon sun">☼</span><span><strong>阳台光伏</strong><small id="pvSwitchCount">加载中</small></span></button>
       <button class="category-button" data-category="storage"><span class="category-icon battery">▣</span><span><strong>阳台储能</strong><small id="storageSwitchCount">加载中</small></span></button>
+      <button class="category-button" data-category="household_pv"><span class="category-icon sun">☼</span><span><strong>户用光伏</strong><small id="household_pvSwitchCount">加载中</small></span></button>
+      <button class="category-button" data-category="household_storage"><span class="category-icon battery">▣</span><span><strong>户用储能</strong><small id="household_storageSwitchCount">加载中</small></span></button>
     </section>
     <section class="metric-grid">
       <article class="metric-card accent"><span class="metric-label">筛选后登记数</span><strong id="metricCount">--</strong><span id="metricCountNote">官方记录</span></article>
-      <article class="metric-card"><span class="metric-label">登记日期范围</span><strong id="metricRange">--</strong><span>严格晚于 2023-01-01</span></article>
+      <article class="metric-card"><span class="metric-label">登记日期范围</span><strong id="metricRange">--</strong><span id="metricRangeNote">严格晚于 2023-01-01</span></article>
       <article class="metric-card"><span class="metric-label">峰值月份</span><strong id="metricPeak">--</strong><span id="metricPeakNote">--</span></article>
       <article class="metric-card"><span class="metric-label">当前筛选</span><strong id="metricFilter">全量</strong><span id="metricLoaded">明细按需加载</span></article>
     </section>
@@ -68,6 +70,6 @@
     <section class="notes"><div><span class="section-kicker">口径说明</span><p id="scopeText">加载中</p></div><a href="https://www.marktstammdatenregister.de/MaStR/Einheit/Einheiten/ErweiterteOeffentlicheEinheitenuebersicht" target="_blank" rel="noreferrer">打开官方 MaStR 页面 ↗</a></section>
   </main>
   <footer class="footer">数据来源：Bundesnetzagentur / Marktstammdatenregister · 本页面不代表销量</footer>
-  <script src="app.js?v=20260922-separate-device-trends"></script>
+  <script src="app.js?v=20261013-household"></script>
 </body>
 </html>
