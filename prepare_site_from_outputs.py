@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable
 
-from mastr_official_export import brand_keyword_summary, compact_record, dashboard_performance
+from mastr_official_export import CATEGORIES, brand_keyword_summary, compact_record, dashboard_performance
 
 
 FILES = {
@@ -51,10 +51,9 @@ def main() -> int:
             raise FileNotFoundError(f"Missing analysis artifact file: {source}")
         shutil.copyfile(source, data_dir / destination_name)
 
-    expected = {
-        "pv": args.outputs / "balcony_pv.csv",
-        "storage": args.outputs / "balcony_storage.csv",
-    }
+    summary = json.loads((data_dir / "summary.json").read_text(encoding="utf-8"))
+    expected = {key: args.outputs / filename for key, (_label, filename) in CATEGORIES.items()
+                if key in summary["categories"]}
     counts = {}
     for category, source in expected.items():
         if not source.is_file():

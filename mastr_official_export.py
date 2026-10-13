@@ -1,4 +1,4 @@
-"""Process the official MaStR export for two balcony categories.
+"""Process the official MaStR export for balcony and household categories.
 
 The full official export is downloaded to the ephemeral GitHub Actions runner
 and processed row by row. It is never loaded into RAM as one dataframe.
@@ -11,6 +11,9 @@ Balcony storage:
     Registrierungsdatum der Einheit > 2023-01-01
     Nettonennleistung der Einheit == 0.8 kW
     Energieträger == Speicher
+
+Household PV: building solar installations used by households, all dates.
+Household storage: low-voltage storage with net rated power != 0.8 kW, all dates.
 """
 
 from __future__ import annotations
@@ -32,7 +35,6 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
-import requests
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -80,6 +82,14 @@ F_BUILDING_USE = "Nutzungsbereich des Gebäudes mit Solaranlage"
 F_STORAGE_TECH = "Speichertechnologie"
 F_CAPACITY = "Nutzbare Speicherkapazität in kWh"
 F_COUPLING = "AC/DC-Koppelung"
+F_VOLTAGE = "Spannungsebene"
+HOUSEHOLD_VOLTAGE = "Niederspannung (= Hausanschluss/Haushaltsstrom)"
+CATEGORIES = {
+    "pv": ("阳台光伏", "balcony_pv.csv"),
+    "storage": ("阳台储能", "balcony_storage.csv"),
+    "household_pv": ("户用光伏", "household_pv.csv"),
+    "household_storage": ("户用储能", "household_storage.csv"),
+}
 
 ALIASES: Dict[str, Tuple[str, ...]] = {
     "id": (F_ID, "EinheitMastrNummer"),
@@ -102,6 +112,7 @@ ALIASES: Dict[str, Tuple[str, ...]] = {
     "storage_tech": (F_STORAGE_TECH, "Batterietechnologie", "Speichertechnologie"),
     "capacity": (F_CAPACITY, "NutzbareSpeicherkapazitaet"),
     "coupling": (F_COUPLING, "AcDcKoppelung"),
+    "voltage": (F_VOLTAGE, "Spannungsebene des Netzanschlusses", "Spannungsebene"),
 }
 
 FEATURE_FIELDS = {
@@ -127,12 +138,17 @@ PERFORMANCE_METRICS: Dict[str, Tuple[Tuple[str, str, str, Tuple[str, ...]], ...]
         ("capacity", "平均可用存储容量", "kWh", ALIASES["capacity"]),
     ),
 }
+PERFORMANCE_METRICS["household_pv"] = PERFORMANCE_METRICS["pv"]
+PERFORMANCE_METRICS["household_storage"] = (
+    ("power", "平均净额定功率", "kW", ALIASES["power"]),
+    ("capacity", "平均可用存储容量", "kWh", ALIASES["capacity"]),
+)
 
 FILTERED_OUTPUT_FIELDS = (
     F_ID, F_NAME, F_STATUS, F_ENERGY, F_POWER, F_REGISTERED, F_STATE,
     F_DISTRICT, F_MUNICIPALITY, F_ZIP, F_TOWN, F_SOLAR_TYPE, F_SOLAR_TECH,
     F_MODULES, F_DIRECTION, F_INCLINATION, F_BUILDING_USE, F_STORAGE_TECH,
-    F_CAPACITY, F_COUPLING,
+    F_CAPACITY, F_COUPLING, F_VOLTAGE,
 )
 
 DEFAULT_WORK_DIR = Path(
@@ -391,6 +407,13 @@ def dashboard_performance(
 
         categories[category] = {
             "registration_yoy": {
+                "annual": _growth_record(
+                    str(int(complete_month[:4])),
+                    sum(value for month, value in monthly_registrations.items()
+                        if month[:4] == complete_month[:4] and int(month[-2:]) <= cutoff_month_number),
+                    sum(value for month, value in monthly_registrations.items()
+                        if int(month[:4]) == int(complete_month[:4]) - 1 and int(month[-2:]) <= cutoff_month_number),
+                ),
                 "month": _growth_record(
                     complete_month,
                     monthly_registrations[complete_month],
@@ -415,6 +438,8 @@ def dashboard_performance(
 
 
 def discover_export_url() -> str:
+    import requests
+
     try:
         response = requests.get(
             DOWNLOAD_PAGE,
@@ -446,6 +471,8 @@ def discover_export_url() -> str:
 
 
 def download_resumable(url: str, destination: Path) -> int:
+    import requests
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     existing = destination.stat().st_size if destination.exists() else 0
     headers = {"User-Agent": USER_AGENT}
@@ -534,20 +561,20 @@ def split_mastr_references(raw: str) -> Iterator[str]:
 
 
 def source_csv_rows(handle: io.BufferedIOBase) -> Iterator[Tuple[Dict[str, str], int]]:
-    text = io.TextIOWrapper(handle, encoding="utf-8-sig", errors="replace", newline="")
-    header = text.readline()
-    if not header:
-        return
-    delimiter = ";" if header.count(";") >= header.count(",") else ","
-    reader = csv.DictReader(_prepend_line(header, text), delimiter=delimiter)
-    if not reader.fieldnames:
-        return
-    reader.fieldnames = [clean(name).lstrip("\ufeff") for name in reader.fieldnames]
-    for line_number, raw_row in enumerate(reader, 2):
-        yield (
-            {clean(key): clean(value) for key, value in raw_row.items() if key is not None},
-            line_number,
-        )
+    with io.TextIOWrapper(handle, encoding="utf-8-sig", errors="replace", newline="") as text:
+        header = text.readline()
+        if not header:
+            return
+        delimiter = ";" if header.count(";") >= header.count(",") else ","
+        reader = csv.DictReader(_prepend_line(header, text), delimiter=delimiter)
+        if not reader.fieldnames:
+            return
+        reader.fieldnames = [clean(name).lstrip("\ufeff") for name in reader.fieldnames]
+        for line_number, raw_row in enumerate(reader, 2):
+            yield (
+                {clean(key): clean(value) for key, value in raw_row.items() if key is not None},
+                line_number,
+            )
 
 
 def _prepend_line(first: str, rest: io.TextIOBase) -> Iterator[str]:
@@ -635,18 +662,19 @@ def normalize_xml_row(
         if capacity:
             normalized[F_CAPACITY] = capacity
     copy_field(F_COUPLING, "AcDcKoppelung", resolve=True)
+    copy_field(F_VOLTAGE, "Spannungsebene", resolve=True)
     return normalized
 
 
 class CategoryStats:
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, *, include_names: bool = True) -> None:
         self.label = label
         self.count = 0
         self.unique_ids = 0
         self.monthly: Counter[str] = Counter()
         self.annual: Counter[str] = Counter()
         self.features: Dict[str, Counter[str]] = {
-            name: Counter() for name in FEATURE_FIELDS
+            name: Counter() for name in FEATURE_FIELDS if include_names or name != "name"
         }
         self.first_date: Optional[date] = None
         self.last_date: Optional[date] = None
@@ -659,7 +687,8 @@ class CategoryStats:
         self.first_date = registered if self.first_date is None else min(self.first_date, registered)
         self.last_date = registered if self.last_date is None else max(self.last_date, registered)
         for feature, aliases in FEATURE_FIELDS.items():
-            self.features[feature][get_value(row, aliases) or "(keine Angabe)"] += 1
+            if feature in self.features:
+                self.features[feature][get_value(row, aliases) or "(keine Angabe)"] += 1
 
     def monthly_rows(self) -> List[Dict[str, object]]:
         total = max(self.count, 1)
@@ -721,7 +750,7 @@ class OutputWriters:
 
     def write(self, category: str, row: Mapping[str, str], source_name: str, fields: Sequence[str]) -> None:
         if category not in self.csv_files:
-            filename = "balcony_pv.csv" if category == "pv" else "balcony_storage.csv"
+            filename = CATEGORIES[category][1]
             output = (self.output_dir / filename).open("w", newline="", encoding="utf-8-sig")
             columns = list(dict.fromkeys([*fields, *FILTERED_OUTPUT_FIELDS]))
             for extra in ("Kategorie", "Quelle"):
@@ -732,12 +761,12 @@ class OutputWriters:
             self.csv_files[category] = (output, writer)
         output, writer = self.csv_files[category]
         enriched = dict(row)
-        enriched["Kategorie"] = "阳台光伏" if category == "pv" else "阳台储能"
+        enriched["Kategorie"] = CATEGORIES[category][0]
         enriched["Quelle"] = source_name
         writer.writerow(enriched)
 
         if category not in self.gzip_files:
-            name = "records_pv.ndjson.gz" if category == "pv" else "records_storage.ndjson.gz"
+            name = f"records_{category}.ndjson.gz"
             self.gzip_files[category] = gzip.open(
                 self.site_data_dir / name, "wt", encoding="utf-8"
             )
@@ -778,13 +807,30 @@ def compact_record(row: Mapping[str, str], category: str) -> Dict[str, str]:
         "storageTech": value("storage_tech"),
         "capacity": value("capacity"),
         "coupling": value("coupling"),
-        "category": "pv" if category == "pv" else "storage",
+        "voltage": value("voltage"),
+        "category": category,
     }
 
 
 def matches(category: str, row: Mapping[str, str]) -> Tuple[bool, Optional[date]]:
     registered = parse_date(get_value(row, ALIASES["registered"]))
-    if registered is None or registered <= DATE_CUTOFF:
+    if registered is None:
+        return False, registered
+    if category == "household_pv":
+        return (
+            get_value(row, ALIASES["solar_type"]) == "Gebäudesolaranlage"
+            and get_value(row, ALIASES["building_use"]) == "Haushalt",
+            registered,
+        )
+    if category == "household_storage":
+        power = parse_number(get_value(row, ALIASES["power"]))
+        return (
+            power is not None and abs(power - TARGET_POWER_KW) > 1e-9
+            and get_value(row, ALIASES["energy"]) == "Speicher"
+            and get_value(row, ALIASES["voltage"]) == HOUSEHOLD_VOLTAGE,
+            registered,
+        )
+    if registered <= DATE_CUTOFF:
         return False, registered
     if category == "pv":
         return get_value(row, ALIASES["solar_type"]) == TARGET_PV_TYPE, registered
@@ -799,7 +845,8 @@ def matches(category: str, row: Mapping[str, str]) -> Tuple[bool, Optional[date]
 
 def iter_members(source_path: Path) -> Iterator[Tuple[str, Iterable[Tuple[Dict[str, str], int]]]]:
     if source_path.suffix.lower() == ".csv":
-        yield source_path.name, source_csv_rows(source_path.open("rb"))
+        with source_path.open("rb") as handle:
+            yield source_path.name, source_csv_rows(handle)
         return
     if source_path.suffix.lower() != ".zip":
         raise RuntimeError(f"Unsupported source file: {source_path}")
@@ -838,6 +885,29 @@ def iter_members(source_path: Path) -> Iterator[Tuple[str, Iterable[Tuple[Dict[s
                 ):
                     storage_capacity_by_unit[unit_id] = capacity
 
+    voltage_by_location: Dict[str, str] = {}
+    voltage_by_connection: Dict[str, str] = {}
+    locations: Dict[str, str] = {}
+    for name in sorted(archive.namelist()):
+        if not name.lower().endswith(".xml") or not any(
+            part in Path(name).name.lower() for part in ("lokationen", "netzanschlusspunkte")
+        ):
+            continue
+        with archive.open(name) as handle:
+            for row, _line_number in source_xml_rows(handle, row_names=("Lokation", "Netzanschlusspunkt")):
+                voltage = xml_catalog_value(row.get("Spannungsebene", ""), catalog)
+                location = clean(row.get("LokationMaStRNummer", "") or row.get("LokationMastrNummer", ""))
+                connection = clean(row.get("NetzanschlusspunktMastrNummer", ""))
+                if voltage and location:
+                    voltage_by_location[location] = voltage
+                if voltage and connection:
+                    voltage_by_connection[connection] = voltage
+                if location and connection:
+                    locations[location] = connection
+    for location, connection in locations.items():
+        if location not in voltage_by_location and connection in voltage_by_connection:
+            voltage_by_location[location] = voltage_by_connection[connection]
+
     names = xml_member_names(archive)
     if not names:
         archive.close()
@@ -846,12 +916,17 @@ def iter_members(source_path: Path) -> Iterator[Tuple[str, Iterable[Tuple[Dict[s
         def normalized_rows(member_name: str = name) -> Iterator[Tuple[Dict[str, str], int]]:
             with archive.open(member_name) as handle:
                 for row, line_number in source_xml_rows(handle):
-                    yield normalize_xml_row(
+                    normalized = normalize_xml_row(
                         row,
                         catalog,
                         storage_capacity_by_plant,
                         storage_capacity_by_unit,
-                    ), line_number
+                    )
+                    if not normalized.get(F_VOLTAGE):
+                        normalized[F_VOLTAGE] = voltage_by_location.get(
+                            clean(row.get("LokationMaStRNummer", "") or row.get("LokationMastrNummer", "")), ""
+                        )
+                    yield normalized, line_number
 
         yield name, normalized_rows()
     archive.close()
@@ -935,6 +1010,8 @@ def write_analysis(
             "balcony_pv_solar_type": TARGET_PV_TYPE,
             "balcony_storage_power_kw": TARGET_POWER_KW,
             "balcony_storage_energy_carrier": "Speicher",
+            "household_pv": {"solar_type": "Gebäudesolaranlage", "building_use": "Haushalt", "registration_date": "all"},
+            "household_storage": {"energy": "Speicher", "voltage": HOUSEHOLD_VOLTAGE, "power_kw": "!= 0.8", "registration_date": "all"},
         },
         "categories": categories,
         "monthly": monthly,
@@ -951,7 +1028,7 @@ def write_analysis(
             ),
         },
         "notes": [
-            "统计口径是官方 MaStR 全量导出包中登记日期严格大于 2023-01-01 的记录。",
+            "阳台品类登记日期严格大于 2023-01-01；户用品类覆盖全部登记日期。",
             "储能的 0.8 kW 匹配同时兼容官方 CSV 中的 0,8 和 0.8 写法。",
             "MaStR 没有公开字段能证明每一条 0.8 kW Speicher 都是物理上的插入式产品；阳台储能标签沿用用户给定筛选口径。",
             "扩展单位总览包含截至数据日已新登记或变更的公开记录，统计不是销量。",
@@ -979,7 +1056,7 @@ def write_analysis(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     report = [
-        "# MaStR 阳台光伏与阳台储能分析",
+        "# MaStR 阳台与户用光伏储能分析",
         "",
         f"数据包：{export_name}",
         f"生成时间（UTC）：{generated_at}",
@@ -987,14 +1064,14 @@ def write_analysis(
         "| 品类 | 登记数 | 日期范围 |",
         "|---|---:|---|",
     ]
-    for key, label in (("pv", "阳台光伏"), ("storage", "阳台储能")):
+    for key, (label, _filename) in CATEGORIES.items():
         item = categories[key]
         report.append(
             f"| {label} | {item['matching_records']:,} | "
             f"{item['first_registration_date']} 至 {item['last_registration_date']} |"
         )
     report += ["", "## 自动分析", ""]
-    for key, label in (("pv", "阳台光伏"), ("storage", "阳台储能")):
+    for key, (label, _filename) in CATEGORIES.items():
         report += [f"### {label}", ""]
         report += [f"- {line}" for line in insights[key]]
         registration_yoy = performance["categories"][key]["registration_yoy"]
@@ -1027,12 +1104,15 @@ def process(source_path: Path, source_url: str, output_dir: Path, site_dir: Path
     for path in site_data_dir.iterdir():
         if path.is_file():
             path.unlink()
-    for filename in ("balcony_pv.csv", "balcony_storage.csv"):
+    for _label, filename in CATEGORIES.values():
         path = output_dir / filename
         if path.exists():
             path.unlink()
 
-    stats = {"pv": CategoryStats("阳台光伏"), "storage": CategoryStats("阳台储能")}
+    stats = {
+        key: CategoryStats(label, include_names=not key.startswith("household_"))
+        for key, (label, _filename) in CATEGORIES.items()
+    }
     # A run must start with an empty de-duplication index. The index is only a
     # run-time guard against duplicate rows inside one export, not a history DB.
     seen_path = output_dir.parent / "mastr_seen.sqlite"
@@ -1053,7 +1133,7 @@ def process(source_path: Path, source_url: str, output_dir: Path, site_dir: Path
                     print(f"scanned {scanned:,} source rows", flush=True)
                 if not fields:
                     fields = list(row.keys())
-                for category in ("pv", "storage"):
+                for category in CATEGORIES:
                     matched, registered = matches(category, row)
                     if not matched or registered is None:
                         continue
@@ -1071,13 +1151,13 @@ def process(source_path: Path, source_url: str, output_dir: Path, site_dir: Path
 
     # Keep the artifact and the dashboard valid even if one category has zero
     # matches in a future export.
-    for category, filename in (("pv", "balcony_pv.csv"), ("storage", "balcony_storage.csv")):
+    for category, (_label, filename) in CATEGORIES.items():
         csv_path = output_dir / filename
         if not csv_path.exists():
             columns = list(fields) + ["Kategorie", "Quelle"]
             with csv_path.open("w", newline="", encoding="utf-8-sig") as output:
                 csv.DictWriter(output, fieldnames=columns).writeheader()
-        gzip_name = "records_pv.ndjson.gz" if category == "pv" else "records_storage.ndjson.gz"
+        gzip_name = f"records_{category}.ndjson.gz"
         gzip_path = site_data_dir / gzip_name
         if not gzip_path.exists():
             with gzip.open(gzip_path, "wt", encoding="utf-8"):
@@ -1088,10 +1168,7 @@ def process(source_path: Path, source_url: str, output_dir: Path, site_dir: Path
     with storage_csv.open("r", encoding="utf-8-sig", newline="") as source:
         brand_summary = brand_keyword_summary(csv.DictReader(source))
     performance = dashboard_performance(
-        {
-            "pv": filtered_csv_rows(output_dir / "balcony_pv.csv"),
-            "storage": filtered_csv_rows(storage_csv),
-        },
+        {key: filtered_csv_rows(output_dir / filename) for key, (_label, filename) in CATEGORIES.items()},
         datetime.fromisoformat(generated_at).date(),
     )
 
@@ -1110,6 +1187,8 @@ def process(source_path: Path, source_url: str, output_dir: Path, site_dir: Path
     print(f"Scanned source rows: {scanned:,}", flush=True)
     print(f"Balcony PV records: {stats['pv'].count:,}", flush=True)
     print(f"Balcony storage records: {stats['storage'].count:,}", flush=True)
+    print(f"Household PV records: {stats['household_pv'].count:,}", flush=True)
+    print(f"Household storage records: {stats['household_storage'].count:,}", flush=True)
     return summary
 
 

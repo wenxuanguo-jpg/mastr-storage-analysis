@@ -1,4 +1,4 @@
-# MaStR 阳台光伏与阳台储能分析
+# MaStR 阳台与户用光伏储能分析
 
 项目包含一个 GitHub Actions 流程，用于从 Bundesnetzagentur 的官方 MaStR Gesamtdatenexport 下载全量数据，在 GitHub Actions runner 临时目录中流式筛选，并部署交互式 GitHub Pages 看板。
 
@@ -7,6 +7,12 @@
 手动运行：在 GitHub 仓库的 **Actions → MaStR balcony dashboard → Run workflow** 启动。成功后，Pages 看板和同一次运行的 artifact 分别提供压缩交互明细、完整筛选 CSV、月度/年度汇总、特征统计和中文分析报告。完整 ZIP 只写入 runner 临时目录，不提交到仓库。
 
 自动更新：每周一 `05:30 UTC`（北京时间周一 `13:30`）运行一次；同一轮任务先读取官方最新全量导出包，再生成筛选数据、分析结果和 Pages 看板。也可以通过上面的手动入口提前更新。
+
+户用光伏按 `Art der Solaranlage = Gebäudesolaranlage` 且 `Nutzungsbereich des Gebäudes mit Solaranlage = Haushalt` 筛选；户用储能按 `Energieträger = Speicher`、`Spannungsebene = Niederspannung (= Hausanschluss/Haushaltsstrom)` 且 `Nettonennleistung der Einheit != 0.8 kW` 筛选。两类覆盖全部登记日期和运行状态，与阳台模块在同一次定时任务中更新，不进行品牌分析。
+
+户用模块展示按登记日期统计的月度与年度数量、完整月/季度同比及年度同期累计同比。户用光伏展示平均净额定功率与组件数量，户用储能展示平均净额定功率与可用容量；户用储能容量均值不沿用阳台储能的 100 kWh 异常值阈值。
+
+字段核实可在 Actions 中手动运行 `Inspect official MaStR export schema`。官方导出文档只下载到 GitHub runner 临时目录，电压、位置和并网点的字段定义输出到任务日志，并与文档一起保存在 `mastr-official-schema` 云端 artifact 中（保留 7 天）。不需要在本机下载官方数据或文档。该核实任务不会部署网页，也不会修改每周分析任务的更新频率。
 
 看板分析还包括最近完整月和最近完整季度的登记同比。阳台光伏展示净额定功率与太阳能组件数量的月度/年度平均趋势；阳台储能展示可用存储容量的月度/年度平均趋势。年度设备均值按各年份截至同一完整月份的有效数值记录比较，避免将未结束的当年期间与上一年全年直接比较。
 
