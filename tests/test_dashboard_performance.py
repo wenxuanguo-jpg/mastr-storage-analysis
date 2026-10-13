@@ -15,6 +15,15 @@ from mastr_official_export import (
     OutputWriters,
     dashboard_performance,
     iter_members,
+    matches,
+    F_SOLAR_TYPE,
+    F_BUILDING_USE,
+    F_ENERGY,
+    F_VOLTAGE,
+    HOUSEHOLD_VOLTAGE,
+    F_ID,
+    TARGET_PV_TYPE,
+    process,
 )
 from prepare_site_from_outputs import main as rebuild_site
 
@@ -29,6 +38,63 @@ def row(registered, power="", modules="", capacity=""):
 
 
 class DashboardPerformanceTests(unittest.TestCase):
+    def test_household_voltage_is_joined_from_official_connection_xml(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive_path = Path(temporary) / "export.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("Katalogwerte.xml", f"<Katalogwerte><Katalogwert><Id>354</Id><Wert>{HOUSEHOLD_VOLTAGE}</Wert></Katalogwert><Katalogwert><Id>2493</Id><Wert>Speicher</Wert></Katalogwert></Katalogwerte>")
+                archive.writestr("Netzanschlusspunkte.xml", "<Netzanschlusspunkte><Netzanschlusspunkt><NetzanschlusspunktMastrNummer>SAN1</NetzanschlusspunktMastrNummer><LokationMaStRNummer>SEL1</LokationMaStRNummer><Spannungsebene>354</Spannungsebene></Netzanschlusspunkt></Netzanschlusspunkte>")
+                archive.writestr("EinheitenStromSpeicher.xml", "<EinheitenStromSpeicher><EinheitStromSpeicher><EinheitMastrNummer>SEE1</EinheitMastrNummer><LokationMaStRNummer>SEL1</LokationMaStRNummer><Registrierungsdatum>2019-08-10</Registrierungsdatum><Energietraeger>2493</Energietraeger><Nettonennleistung>5</Nettonennleistung></EinheitStromSpeicher></EinheitenStromSpeicher>")
+            records = [record for _, rows in iter_members(archive_path) for record, _ in rows]
+            self.assertEqual(records[0][F_VOLTAGE], HOUSEHOLD_VOLTAGE)
+            self.assertTrue(matches("household_storage", records[0])[0])
+
+    def test_four_category_pipeline_and_artifact_restore(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.csv"
+            records = [
+                {F_ID: "PV1", F_REGISTERED: "2026-08-10", F_SOLAR_TYPE: TARGET_PV_TYPE, F_POWER: "0.8", F_MODULES: "2"},
+                {F_ID: "ST1", F_REGISTERED: "2026-08-10", F_ENERGY: "Speicher", F_POWER: "0.8", F_CAPACITY: "2"},
+                {F_ID: "HP1", F_REGISTERED: "2019-08-10", F_SOLAR_TYPE: "Gebäudesolaranlage", F_BUILDING_USE: "Haushalt", F_POWER: "10", F_MODULES: "20"},
+                {F_ID: "HS1", F_REGISTERED: "2019-08-10", F_ENERGY: "Speicher", F_POWER: "5", F_CAPACITY: "12", F_VOLTAGE: HOUSEHOLD_VOLTAGE},
+            ]
+            with source.open("w", encoding="utf-8-sig", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(dict.fromkeys(key for record in records for key in record)))
+                writer.writeheader()
+                writer.writerows(records + records)
+            summary = process(source, "fixture", root / "outputs", root / "site")
+            self.assertEqual([item["matching_records"] for item in summary["categories"].values()], [1, 1, 1, 1])
+            self.assertNotIn("name", summary["features"]["household_pv"])
+            with patch.object(sys, "argv", ["prepare_site_from_outputs.py", "--outputs", str(root / "outputs"), "--site", str(root / "rebuilt")]):
+                self.assertEqual(rebuild_site(), 0)
+            payload = json.loads((root / "rebuilt/data/performance.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["categories"]["household_storage"]["metrics"]["capacity"]["monthly"][0]["average"], 12)
+
+    def test_household_filters_include_older_registrations(self):
+        solar = {F_REGISTERED: "2019-01-01", F_SOLAR_TYPE: "Gebäudesolaranlage", F_BUILDING_USE: "Haushalt"}
+        self.assertTrue(matches("household_pv", solar)[0])
+        self.assertFalse(matches("pv", solar)[0])
+        self.assertFalse(matches("household_pv", dict(solar, **{F_BUILDING_USE: "Gewerbe"}))[0])
+        storage = {F_REGISTERED: "2019-01-01", F_ENERGY: "Speicher", F_VOLTAGE: HOUSEHOLD_VOLTAGE}
+        for power in ("0,5", "5", "100"):
+            self.assertTrue(matches("household_storage", dict(storage, **{F_POWER: power}))[0])
+        for power in ("0,8", "0.800", ""):
+            self.assertFalse(matches("household_storage", dict(storage, **{F_POWER: power}))[0])
+        self.assertFalse(matches("household_storage", dict(storage, **{F_POWER: "5", F_VOLTAGE: "Mittelspannung"}))[0])
+
+    def test_household_capacity_and_comparable_annual_growth(self):
+        result = dashboard_performance({"household_storage": [
+            row("2025-01-10", power="5", capacity="150"),
+            row("2026-01-10", power="10", capacity="200"),
+            row("2026-08-10", power="10", capacity="300"),
+            row("2026-09-10", power="10", capacity="300"),
+        ]}, as_of=__import__("datetime").date(2026, 9, 17))
+        category = result["categories"]["household_storage"]
+        self.assertEqual(category["registration_yoy"]["annual"]["registrations"], 2)
+        self.assertEqual(category["registration_yoy"]["annual"]["yoy_pct"], 100.0)
+        self.assertEqual(category["metrics"]["capacity"]["monthly"][0]["average"], 150.0)
+
     def setUp(self):
         self.rows = {
             "pv": [
