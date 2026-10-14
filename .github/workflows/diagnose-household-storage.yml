@@ -1,0 +1,30 @@
+name: Diagnose household storage counts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      MASTR_WORK_DIR: /tmp/mastr_export
+      MASTR_OUTPUT_DIR: ${{ github.workspace }}/outputs
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements-mastr.txt
+      - name: Inspect official storage distribution on runner
+        run: python diagnose_household_storage.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: storage-count-diagnostics
+          path: outputs/storage_diagnostics.json
+          if-no-files-found: error
+          retention-days: 14
